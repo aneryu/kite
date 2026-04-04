@@ -53,6 +53,8 @@ pub const ClientMessage = struct {
     rows: ?u16 = null,
     request_id: ?[]const u8 = null,
     approved: ?bool = null,
+    session_id: ?u64 = null,
+    text: ?[]const u8 = null, // prompt_response 的用户输入文本
 };
 
 pub const ParsedClientMessage = struct {
@@ -73,6 +75,40 @@ pub fn parseClientMessage(allocator: std.mem.Allocator, raw: []const u8) !Parsed
         .allocate = .alloc_always,
     });
     return .{ .inner = parsed };
+}
+
+pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summary: []const u8, options: []const []const u8) ![]u8 {
+    const escaped_summary = try jsonEscapeAlloc(allocator, summary);
+    defer allocator.free(escaped_summary);
+
+    var opts_buf: std.ArrayList(u8) = .empty;
+    defer opts_buf.deinit(allocator);
+    try opts_buf.append(allocator, '[');
+    for (options, 0..) |opt, i| {
+        if (i > 0) try opts_buf.append(allocator, ',');
+        try opts_buf.append(allocator, '"');
+        const escaped_opt = try jsonEscapeAlloc(allocator, opt);
+        defer allocator.free(escaped_opt);
+        try opts_buf.appendSlice(allocator, escaped_opt);
+        try opts_buf.append(allocator, '"');
+    }
+    try opts_buf.append(allocator, ']');
+
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"prompt_request","session_id":{d},"summary":"{s}","options":{s}}}
+    , .{ session_id, escaped_summary, opts_buf.items });
+}
+
+pub fn encodeSessionStateChange(allocator: std.mem.Allocator, session_id: u64, state: @import("session.zig").SessionState) ![]u8 {
+    const state_str = switch (state) {
+        .starting => "starting",
+        .running => "running",
+        .waiting_input => "waiting_input",
+        .stopped => "stopped",
+    };
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"session_state_change","session_id":{d},"state":"{s}"}}
+    , .{ session_id, state_str });
 }
 
 fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
@@ -99,4 +135,27 @@ fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+test "encodePromptRequest" {
+    const allocator = std.testing.allocator;
+    const options = [_][]const u8{ "Yes", "No" };
+    const msg = try encodePromptRequest(allocator, 1, "Continue?", &options);
+    defer allocator.free(msg);
+    const parsed = try std.json.parseFromSlice(struct {
+        @"type": []const u8,
+        session_id: u64,
+        summary: []const u8,
+    }, allocator, msg, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("prompt_request", parsed.value.@"type");
+    try std.testing.expectEqual(@as(u64, 1), parsed.value.session_id);
+}
+
+test "encodeSessionStateChange" {
+    const allocator = std.testing.allocator;
+    const session_mod = @import("session.zig");
+    const msg = try encodeSessionStateChange(allocator, 1, session_mod.SessionState.waiting_input);
+    defer allocator.free(msg);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "waiting_input") != null);
 }
