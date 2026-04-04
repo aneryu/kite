@@ -34,7 +34,12 @@ class SessionStore {
     switch (msg.type) {
       case 'session_state_change': {
         const s = this.getSession(sid);
-        if (s && msg.state) {
+        if (!s) {
+          // Unknown session — reload from server
+          this.load();
+          break;
+        }
+        if (msg.state) {
           s.state = msg.state as SessionInfo['state'];
           if (msg.state !== 'waiting_input' && msg.state !== 'asking') {
             this.prompts.delete(sid);
@@ -69,12 +74,14 @@ class SessionStore {
         break;
       }
       case 'prompt_request': {
-        const s = this.getSession(sid);
-        if (s) {
-          s.state = msg.state === 'asking' ? 'asking' : 'waiting_input';
-          this.prompts.set(sid, { summary: msg.summary ?? '', options: msg.options ?? [] });
-          this.notify();
+        let s = this.getSession(sid);
+        if (!s) {
+          this.load();
+          break;
         }
+        s.state = (msg.state as SessionInfo['state']) ?? 'waiting_input';
+        this.prompts.set(sid, { summary: msg.summary ?? '', options: msg.options ?? [] });
+        this.notify();
         break;
       }
     }

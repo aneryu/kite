@@ -77,7 +77,7 @@ pub fn parseClientMessage(allocator: std.mem.Allocator, raw: []const u8) !Parsed
     return .{ .inner = parsed };
 }
 
-pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summary: []const u8, options: []const []const u8) ![]u8 {
+pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summary: []const u8, options: []const []const u8, state: @import("session.zig").SessionState) ![]u8 {
     const escaped_summary = try jsonEscapeAlloc(allocator, summary);
     defer allocator.free(escaped_summary);
 
@@ -94,9 +94,18 @@ pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summar
     }
     try opts_buf.append(allocator, ']');
 
+    const state_str = switch (state) {
+        .starting => "starting",
+        .running => "running",
+        .idle => "idle",
+        .waiting_input => "waiting_input",
+        .asking => "asking",
+        .stopped => "stopped",
+    };
+
     return std.fmt.allocPrint(allocator,
-        \\{{"type":"prompt_request","session_id":{d},"summary":"{s}","options":{s}}}
-    , .{ session_id, escaped_summary, opts_buf.items });
+        \\{{"type":"prompt_request","session_id":{d},"state":"{s}","summary":"{s}","options":{s}}}
+    , .{ session_id, state_str, escaped_summary, opts_buf.items });
 }
 
 pub fn encodeTaskUpdate(allocator: std.mem.Allocator, session_id: u64, task_id: []const u8, subject: []const u8, completed: bool) ![]u8 {
@@ -168,7 +177,8 @@ fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 test "encodePromptRequest" {
     const allocator = std.testing.allocator;
     const options = [_][]const u8{ "Yes", "No" };
-    const msg = try encodePromptRequest(allocator, 1, "Continue?", &options);
+    const session_mod = @import("session.zig");
+    const msg = try encodePromptRequest(allocator, 1, "Continue?", &options, session_mod.SessionState.waiting_input);
     defer allocator.free(msg);
     const parsed = try std.json.parseFromSlice(struct {
         @"type": []const u8,

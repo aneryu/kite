@@ -12,7 +12,7 @@
   }
 </script>
 
-<button class="card" class:waiting={session.state === 'waiting_input'} {onclick}>
+<button class="card" class:waiting={session.state === 'waiting_input' || session.state === 'asking'} {onclick}>
   <div class="row">
     <span class="title">{session.cwd.split('/').pop() || session.command}</span>
     <span class="status {session.state}">{session.state.replace('_', ' ')}</span>

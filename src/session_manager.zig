@@ -207,7 +207,7 @@ pub const SessionManager = struct {
 
                 session.setWaitingInput(summary, options);
 
-                const msg = protocol.encodePromptRequest(self.allocator, session.id, summary, options) catch return;
+                const msg = protocol.encodePromptRequest(self.allocator, session.id, summary, options, session.state) catch return;
                 defer self.allocator.free(msg);
                 self.broadcaster.broadcast(msg);
             } else if (std.mem.eql(u8, parsed.value.stop_reason, "end_turn")) {
@@ -291,7 +291,7 @@ pub const SessionManager = struct {
             // Override state back to asking (setWaitingInput sets waiting_input)
             session.state = .asking;
 
-            const msg = protocol.encodePromptRequest(self.allocator, session.id, question_text, option_labels) catch return;
+            const msg = protocol.encodePromptRequest(self.allocator, session.id, question_text, option_labels, session.state) catch return;
             defer self.allocator.free(msg);
             self.broadcaster.broadcast(msg);
             return;
