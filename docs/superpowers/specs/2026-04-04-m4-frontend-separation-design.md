@@ -56,7 +56,9 @@
 
 新增 `POST /api/v1/hooks` 端点，接收 Claude Code HTTP 类型的 hook 事件。根据 `hook_event_name` 字段分发处理，更新 session 状态，通过 WebSocket 广播给前端。
 
-替代现有的 Unix Socket IPC 方式。删除 `hooks.zig` 和 `main.zig` 中的 IPC listener 相关代码，改用 HTTP hook 端点接收事件。
+保留现有的 Unix Socket IPC 方式（`hooks.zig`、`kite hook` 命令、IPC listener），用于兼容其他工具。两种 hook 接入方式并存：
+- **HTTP hook**：Claude Code 原生 HTTP hook 类型，直接 POST 到 daemon
+- **IPC hook**：现有的 `kite hook --event <E>` 命令通过 Unix Socket 转发，兼容其他 CLI 工具
 
 ### 1.6 Session 数据模型扩展
 
