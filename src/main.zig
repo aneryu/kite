@@ -367,23 +367,41 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
         const sid_str = lines.next() orelse return false;
         const session_id = std.fmt.parseInt(u64, std.mem.trim(u8, sid_str, " \r"), 10) catch 1;
 
-        if (!session_manager.attachLocal(session_id, conn)) {
+        // Verify session exists before attaching
+        if (session_manager.getSession(session_id) == null) {
             _ = posix.write(conn, "error\n") catch {};
             return false;
         }
 
-        // Send "ok" acknowledgment
+        // Send "ok" BEFORE attachLocal to avoid race condition:
+        // If we attachLocal first, ioRelay may write PTY output to conn
+        // before "ok\n" is sent, causing the client handshake to fail.
         _ = posix.write(conn, "ok\n") catch {};
 
-        // This thread now handles local terminal input → PTY.
-        // PTY output → local terminal is handled by ioRelay via local_fd.
-        // We also handle "resize" commands inline.
-        handleAttachedSession(session_manager, session_id, conn);
+        // Now attach — ioRelay will start writing PTY output to this fd
+        if (!session_manager.attachLocal(session_id, conn)) {
+            return false;
+        }
 
-        // Detach when done
-        session_manager.detachLocal(session_id);
-        posix.close(conn);
-        return true; // We closed it ourselves
+        // Send buffered terminal history so client sees current state
+        if (session_manager.getSession(session_id)) |session| {
+            const history = session.terminal_buffer.slice();
+            if (history.first.len > 0) {
+                _ = posix.write(conn, history.first) catch {};
+            }
+            if (history.second.len > 0) {
+                _ = posix.write(conn, history.second) catch {};
+            }
+        }
+
+        // Spawn a thread for the attach relay so IPC listener isn't blocked
+        const attach_thread = std.Thread.spawn(.{}, handleAttachThread, .{ session_manager, session_id, conn }) catch {
+            session_manager.detachLocal(session_id);
+            posix.close(conn);
+            return true;
+        };
+        attach_thread.detach();
+        return true; // Caller should NOT close conn; the thread owns it now
     }
 
     // Normal hook event handling
@@ -423,6 +441,13 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
     }
 
     return false;
+}
+
+/// Thread wrapper for attach handling — owns the connection lifetime.
+fn handleAttachThread(session_manager: *SessionManager, session_id: u64, conn: posix.fd_t) void {
+    handleAttachedSession(session_manager, session_id, conn);
+    session_manager.detachLocal(session_id);
+    posix.close(conn);
 }
 
 /// Handle a locally attached terminal session.
