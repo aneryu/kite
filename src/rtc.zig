@@ -86,10 +86,13 @@ pub const RtcPeer = struct {
 
     pub fn deinit(self: *RtcPeer) void {
         if (self.dc >= 0) {
-            _ = c.rtcDeleteDataChannel(self.dc);
+            _ = c.rtcClose(self.dc);
             self.dc = -1;
         }
         if (self.pc >= 0) {
+            _ = c.rtcClosePeerConnection(self.pc);
+            // Give libdatachannel time to clean up callbacks before deleting
+            std.Thread.sleep(100 * std.time.ns_per_ms);
             _ = c.rtcDeletePeerConnection(self.pc);
             self.pc = -1;
         }
