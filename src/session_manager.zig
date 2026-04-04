@@ -3,7 +3,6 @@ const posix = std.posix;
 const Pty = @import("pty.zig").Pty;
 const session_mod = @import("session.zig");
 const Session = session_mod.Session;
-const WsBroadcaster = @import("ws.zig").WsBroadcaster;
 const protocol = @import("protocol.zig");
 
 fn logStderr(comptime fmt: []const u8, args: anytype) void {
@@ -42,7 +41,7 @@ pub const PendingAskResult = struct {
 pub const SessionManager = struct {
     sessions: std.AutoHashMap(u64, *ManagedSession),
     allocator: std.mem.Allocator,
-    broadcaster: *WsBroadcaster,
+    broadcast_fn: *const fn ([]const u8) void,
     next_id: u64 = 1,
     mutex: std.Thread.Mutex = .{},
     pending_asks: std.AutoHashMap(u64, *PendingAsk),
@@ -65,11 +64,11 @@ pub const SessionManager = struct {
         cols: u16 = 80,
     };
 
-    pub fn init(allocator: std.mem.Allocator, broadcaster: *WsBroadcaster) SessionManager {
+    pub fn init(allocator: std.mem.Allocator, broadcast_fn: *const fn ([]const u8) void) SessionManager {
         return .{
             .sessions = std.AutoHashMap(u64, *ManagedSession).init(allocator),
             .allocator = allocator,
-            .broadcaster = broadcaster,
+            .broadcast_fn = broadcast_fn,
             .pending_asks = std.AutoHashMap(u64, *PendingAsk).init(allocator),
         };
     }
@@ -379,7 +378,7 @@ pub const SessionManager = struct {
         }
         self.mutex.unlock();
 
-        for (msgs) |msg| if (msg) |m| self.broadcaster.broadcast(m);
+        for (msgs) |msg| if (msg) |m| self.broadcast_fn(m);
     }
 
     pub fn resolvePromptResponse(self: *SessionManager, session_id: u64, text: []const u8) void {
@@ -421,7 +420,7 @@ pub const SessionManager = struct {
         if (next_state) |state| {
             const state_msg = protocol.encodeSessionStateChange(self.allocator, session_id, state) catch return;
             defer self.allocator.free(state_msg);
-            self.broadcaster.broadcast(state_msg);
+            self.broadcast_fn(state_msg);
         }
     }
 
@@ -495,7 +494,7 @@ pub const SessionManager = struct {
 
                 const msg = protocol.encodeTerminalOutput(self.allocator, data, ms.session.id) catch continue;
                 defer self.allocator.free(msg);
-                self.broadcaster.broadcast(msg);
+                self.broadcast_fn(msg);
             }
 
             if (fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) break;
@@ -510,7 +509,7 @@ pub const SessionManager = struct {
         if (should_emit) {
             const status_msg = protocol.encodeSessionStateChange(self.allocator, ms.session.id, .stopped) catch return;
             defer self.allocator.free(status_msg);
-            self.broadcaster.broadcast(status_msg);
+            self.broadcast_fn(status_msg);
         }
     }
 };
@@ -621,12 +620,12 @@ fn dupSubagents(allocator: std.mem.Allocator, input: []const session_mod.Subagen
     return out.toOwnedSlice(allocator);
 }
 
+fn noopBroadcast(_: []const u8) void {}
+
 test "session limit" {
     const allocator = std.testing.allocator;
-    var broadcaster = WsBroadcaster.init(allocator);
-    defer broadcaster.deinit();
 
-    var mgr = SessionManager.init(allocator, &broadcaster);
+    var mgr = SessionManager.init(allocator, &noopBroadcast);
     defer mgr.deinit();
 
     try std.testing.expectEqual(@as(usize, 8), SessionManager.max_sessions);
@@ -634,10 +633,8 @@ test "session limit" {
 
 test "session manager init/deinit" {
     const allocator = std.testing.allocator;
-    var broadcaster = WsBroadcaster.init(allocator);
-    defer broadcaster.deinit();
 
-    var mgr = SessionManager.init(allocator, &broadcaster);
+    var mgr = SessionManager.init(allocator, &noopBroadcast);
     defer mgr.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), mgr.sessions.count());

@@ -125,8 +125,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var broadcaster = WsBroadcaster.init(allocator);
     defer broadcaster.deinit();
+    global_broadcaster = &broadcaster;
+    defer global_broadcaster = null;
 
-    var session_manager = SessionManager.init(allocator, &broadcaster);
+    var session_manager = SessionManager.init(allocator, &broadcastViaBroadcaster);
     defer session_manager.deinit();
 
     var http_server = try HttpServer.init(
@@ -156,6 +158,12 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     http_server.stop();
+}
+
+var global_broadcaster: ?*WsBroadcaster = null;
+
+fn broadcastViaBroadcaster(msg: []const u8) void {
+    if (global_broadcaster) |b| b.broadcast(msg);
 }
 
 var sigwinch_received: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
