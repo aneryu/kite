@@ -209,7 +209,7 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
         defer allocator.free(body);
 
         const request = try std.fmt.allocPrint(allocator,
-            "POST /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+            "POST /api/v1/sessions HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
             .{ config.port, body.len, body },
         );
         defer allocator.free(request);
