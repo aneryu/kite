@@ -150,24 +150,8 @@ pub const Server = struct {
         try self.broadcaster.addClient(&client);
         defer self.broadcaster.removeClient(&client);
 
-        // Send initial terminal history
-        if (self.session_manager.getSession(1)) |session| {
-            const history = session.terminal_buffer.slice();
-            if (history.first.len > 0) {
-                const msg = protocol.encodeTerminalOutput(self.allocator, history.first, 1) catch null;
-                if (msg) |m| {
-                    defer self.allocator.free(m);
-                    client.send(m);
-                }
-            }
-            if (history.second.len > 0) {
-                const msg = protocol.encodeTerminalOutput(self.allocator, history.second, 1) catch null;
-                if (msg) |m| {
-                    defer self.allocator.free(m);
-                    client.send(m);
-                }
-            }
-        }
+        // Send full state sync on connect
+        self.sendSessionsSync(&client);
 
         while (true) {
             const message = ws.readSmallMessage() catch break;
@@ -343,6 +327,101 @@ pub const Server = struct {
         try head.respond("{\"ok\":true}", .{
             .extra_headers = self.apiHeaders(),
         });
+    }
+
+    fn sendSessionsSync(self: *Server, client: *ws_mod.WsClient) void {
+        const sessions = self.session_manager.listSessions(self.allocator) catch return;
+        defer self.allocator.free(sessions);
+
+        var json_buf: std.ArrayList(u8) = .empty;
+        defer json_buf.deinit(self.allocator);
+        json_buf.appendSlice(self.allocator, "{\"type\":\"sessions_sync\",\"sessions\":[") catch return;
+        for (sessions, 0..) |s, i| {
+            if (i > 0) json_buf.appendSlice(self.allocator, ",") catch continue;
+            self.buildSessionJson(&json_buf, s) catch continue;
+        }
+        json_buf.appendSlice(self.allocator, "]}") catch return;
+        client.send(json_buf.items);
+    }
+
+    fn buildSessionJson(self: *Server, json_buf: *std.ArrayList(u8), s: anytype) !void {
+        const state_str = switch (s.state) {
+            .starting => "starting",
+            .running => "running",
+            .idle => "idle",
+            .waiting_input => "waiting_input",
+            .asking => "asking",
+            .stopped => "stopped",
+        };
+        const entry = try std.fmt.allocPrint(self.allocator,
+            \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
+        , .{ s.id, state_str, s.command, s.cwd });
+        defer self.allocator.free(entry);
+        try json_buf.appendSlice(self.allocator, entry[0 .. entry.len - 1]);
+
+        // tasks
+        try json_buf.appendSlice(self.allocator, ",\"tasks\":[");
+        for (s.tasks, 0..) |task, ti| {
+            if (ti > 0) try json_buf.appendSlice(self.allocator, ",");
+            const t_entry = std.fmt.allocPrint(self.allocator,
+                \\{{"id":"{s}","subject":"{s}","completed":{s}}}
+            , .{ task.id, task.subject, if (task.completed) "true" else "false" }) catch continue;
+            defer self.allocator.free(t_entry);
+            try json_buf.appendSlice(self.allocator, t_entry);
+        }
+        try json_buf.appendSlice(self.allocator, "]");
+
+        // subagents
+        try json_buf.appendSlice(self.allocator, ",\"subagents\":[");
+        for (s.subagents, 0..) |sa, si| {
+            if (si > 0) try json_buf.appendSlice(self.allocator, ",");
+            const sa_entry = std.fmt.allocPrint(self.allocator,
+                \\{{"id":"{s}","type":"{s}","completed":{s},"elapsed_ms":{d}}}
+            , .{ sa.id, sa.agent_type, if (sa.completed) "true" else "false", sa.elapsed_ms }) catch continue;
+            defer self.allocator.free(sa_entry);
+            try json_buf.appendSlice(self.allocator, sa_entry);
+        }
+        try json_buf.appendSlice(self.allocator, "]");
+
+        // activity
+        if (s.current_activity) |act| {
+            const act_entry = std.fmt.allocPrint(self.allocator,
+                \\,"activity":{{"tool_name":"{s}"}}
+            , .{act.tool_name}) catch {
+                try json_buf.appendSlice(self.allocator, ",\"activity\":null");
+                try json_buf.appendSlice(self.allocator, ",\"prompt\":null}");
+                return;
+            };
+            defer self.allocator.free(act_entry);
+            try json_buf.appendSlice(self.allocator, act_entry);
+        } else {
+            try json_buf.appendSlice(self.allocator, ",\"activity\":null");
+        }
+
+        // prompt
+        const has_prompt = if (@hasField(@TypeOf(s), "prompt_summary"))
+            s.prompt_summary.len > 0 or s.prompt_options.len > 0
+        else
+            false;
+        if (has_prompt) {
+            try json_buf.appendSlice(self.allocator, ",\"prompt\":{\"summary\":\"");
+            const esc = protocol.jsonEscapeAllocPublic(self.allocator, s.prompt_summary) catch "";
+            defer if (esc.len > 0) self.allocator.free(esc);
+            try json_buf.appendSlice(self.allocator, esc);
+            try json_buf.appendSlice(self.allocator, "\",\"options\":[");
+            for (s.prompt_options, 0..) |opt, oi| {
+                if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
+                try json_buf.appendSlice(self.allocator, "\"");
+                const eo = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
+                defer if (eo.len > 0) self.allocator.free(eo);
+                try json_buf.appendSlice(self.allocator, eo);
+                try json_buf.appendSlice(self.allocator, "\"");
+            }
+            try json_buf.appendSlice(self.allocator, "]}");
+        } else {
+            try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
+        }
+        try json_buf.appendSlice(self.allocator, "}");
     }
 
     fn handleSessionsApi(self: *Server, head: *http.Server.Request) !void {

@@ -33,7 +33,20 @@ class SessionStore {
     return this.sessions.find((s) => s.id === id);
   }
 
-  handleMessage(msg: ServerMessage) {
+  handleMessage(msg: ServerMessage & { sessions?: SessionInfo[] }) {
+    // Full state sync from WebSocket connect
+    if (msg.type === 'sessions_sync' && msg.sessions) {
+      this.sessions = msg.sessions;
+      this.prompts.clear();
+      for (const s of this.sessions) {
+        if (s.prompt && (s.state === 'asking' || s.state === 'waiting_input')) {
+          this.prompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options });
+        }
+      }
+      this.notify();
+      return;
+    }
+
     const sid = msg.session_id;
     if (!sid) return;
 
