@@ -13,6 +13,7 @@ pub const prompt_parser = @import("prompt_parser.zig");
 pub const SessionManager = @import("session_manager.zig").SessionManager;
 pub const MessageQueue = @import("message_queue.zig").MessageQueue;
 pub const SignalClient = @import("signal_client.zig").SignalClient;
+pub const rtc = @import("rtc.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());

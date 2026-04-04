@@ -25,6 +25,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Link libdatachannel
+    exe.root_module.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    exe.root_module.linkSystemLibrary("datachannel", .{});
+
     b.installArtifact(exe);
 
     // Run step
@@ -37,6 +42,11 @@ pub fn build(b: *std.Build) void {
     }
 
     // Tests
+    // Link libdatachannel for library module (needed for tests)
+    mod.addSystemIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    mod.linkSystemLibrary("datachannel", .{});
+
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
