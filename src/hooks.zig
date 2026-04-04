@@ -7,6 +7,7 @@ pub const HookEventType = enum {
     PostToolUse,
     Notification,
     Stop,
+    UserPromptSubmit,
 
     pub fn fromString(s: []const u8) ?HookEventType {
         const map = std.StaticStringMap(HookEventType).initComptime(.{
@@ -15,6 +16,7 @@ pub const HookEventType = enum {
             .{ "PostToolUse", .PostToolUse },
             .{ "Notification", .Notification },
             .{ "Stop", .Stop },
+            .{ "UserPromptSubmit", .UserPromptSubmit },
         });
         return map.get(s);
     }
@@ -26,6 +28,7 @@ pub const HookEventType = enum {
             .PostToolUse => "PostToolUse",
             .Notification => "Notification",
             .Stop => "Stop",
+            .UserPromptSubmit => "UserPromptSubmit",
         };
     }
 };
@@ -112,10 +115,14 @@ pub const ClaudeCodeConfig = struct {
             \\      "type": "command",
             \\      "command": "{s} hook --event Stop",
             \\      "timeout": 0
+            \\    }}],
+            \\    "UserPromptSubmit": [{{
+            \\      "type": "command",
+            \\      "command": "{s} hook --event UserPromptSubmit"
             \\    }}]
             \\  }}
             \\}}
-        , .{ kite_path, kite_path, kite_path, kite_path, kite_path });
+        , .{ kite_path, kite_path, kite_path, kite_path, kite_path, kite_path });
     }
 };
 
