@@ -35,31 +35,37 @@ pub const RtcPeer = struct {
     state_queue: *MessageQueue,
     allocator: std.mem.Allocator,
 
+    /// Initialize RtcPeer fields (pc, dc remain -1).
+    /// Call `setupPeerConnection` after the RtcPeer is at its final memory location.
     pub fn init(
         allocator: std.mem.Allocator,
-        config: RtcConfig,
         queue: *MessageQueue,
         state_queue: *MessageQueue,
-    ) !RtcPeer {
-        var self = RtcPeer{
+    ) RtcPeer {
+        return .{
             .queue = queue,
             .state_queue = state_queue,
             .allocator = allocator,
         };
+    }
 
+    /// Create the libdatachannel peer connection and set callbacks.
+    /// Must be called after the RtcPeer is at its final heap location
+    /// (so that the `self` pointer passed to C callbacks remains valid).
+    pub fn setupPeerConnection(self: *RtcPeer, config: RtcConfig) !void {
         // Build ICE server list
         var servers: [2][*c]const u8 = undefined;
         var server_count: c_int = 0;
 
-        const stun_z = try allocator.dupeZ(u8, config.stun_server);
-        defer allocator.free(stun_z);
+        const stun_z = try self.allocator.dupeZ(u8, config.stun_server);
+        defer self.allocator.free(stun_z);
         servers[@intCast(server_count)] = stun_z.ptr;
         server_count += 1;
 
         var turn_z: ?[:0]u8 = null;
-        defer if (turn_z) |t| allocator.free(t);
+        defer if (turn_z) |t| self.allocator.free(t);
         if (config.turn_server) |turn| {
-            turn_z = try allocator.dupeZ(u8, turn);
+            turn_z = try self.allocator.dupeZ(u8, turn);
             servers[@intCast(server_count)] = turn_z.?.ptr;
             server_count += 1;
         }
@@ -72,16 +78,14 @@ pub const RtcPeer = struct {
         if (pc < 0) return RtcError.RuntimeFailure;
         self.pc = pc;
 
-        // Store self pointer as user data for callbacks
-        c.rtcSetUserPointer(pc, @ptrCast(&self));
+        // Store self pointer — safe because self is heap-allocated at final location
+        c.rtcSetUserPointer(pc, @ptrCast(self));
 
         // Set callbacks
         try checkResult(c.rtcSetLocalDescriptionCallback(pc, onLocalDescription));
         try checkResult(c.rtcSetLocalCandidateCallback(pc, onLocalCandidate));
         try checkResult(c.rtcSetStateChangeCallback(pc, onStateChange));
         try checkResult(c.rtcSetDataChannelCallback(pc, onDataChannel));
-
-        return self;
     }
 
     pub fn deinit(self: *RtcPeer) void {

@@ -317,11 +317,12 @@ fn handleSignalMessage(
             logStderr("[kite-signal] Failed to allocate RtcPeer", .{});
             return;
         };
-        peer.* = RtcPeer.init(allocator, .{
+        peer.* = RtcPeer.init(allocator, data_queue, state_queue);
+        peer.setupPeerConnection(.{
             .stun_server = config.stun_server,
             .turn_server = config.turn_server,
-        }, data_queue, state_queue) catch {
-            logStderr("[kite-signal] Failed to init RtcPeer", .{});
+        }) catch {
+            logStderr("[kite-signal] Failed to setup RtcPeer connection", .{});
             allocator.destroy(peer);
             return;
         };
