@@ -22,6 +22,7 @@
       theme: { background: '#0a0a0a', foreground: '#e0e0e0', cursor: '#4fc3f7' },
       cursorBlink: true,
       scrollback: 5000,
+      allowProposedApi: true,
     });
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
