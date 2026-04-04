@@ -197,7 +197,7 @@
   .status.running { background: var(--success); color: #000; }
   .status.waiting_input { background: var(--warn); color: #000; animation: pulse 1.5s infinite; }
   .status.stopped { background: var(--danger); color: #fff; }
-  .status.starting { background: var(--accent); color: #000; }
+  .status.waiting_permission { background: var(--warning, #f59e0b); color: #000; }
   .status.idle { background: var(--accent); color: #000; }
   .status.asking { background: var(--warn); color: #000; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.5 } }

@@ -7,10 +7,12 @@
 
   let { sessionId, onback }: { sessionId: number; onback: () => void } = $props();
 
-  let session = $state(sessionStore.getSession(sessionId));
+  let session = $state<ReturnType<typeof sessionStore.getSession> | undefined>(undefined);
 
   onMount(() => {
-    const unsub = sessionStore.subscribe(() => { session = sessionStore.getSession(sessionId); });
+    const update = () => { session = sessionStore.getSession(sessionId); };
+    update();
+    const unsub = sessionStore.subscribe(update);
     return unsub;
   });
 
@@ -56,7 +58,7 @@
   .status.running { background: var(--success); color: #000; }
   .status.waiting_input { background: var(--warn); color: #000; }
   .status.stopped { background: var(--danger); color: #fff; }
-  .status.starting { background: var(--accent); color: #000; }
+  .status.waiting_permission { background: var(--warning, #f59e0b); color: #000; }
   .status.idle { background: var(--accent); color: #000; }
   .status.asking { background: var(--warn); color: #000; }
   .actions { display: flex; gap: 0; flex-shrink: 0; border-top: 1px solid var(--border); background: var(--card-bg); }

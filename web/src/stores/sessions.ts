@@ -131,7 +131,7 @@ class SessionStore {
   }
 
   sorted(): SessionInfo[] {
-    const priority: Record<string, number> = { asking: 0, waiting_input: 0, running: 1, idle: 2, starting: 3 };
+    const priority: Record<string, number> = { asking: 0, waiting_input: 0, waiting_permission: 0, running: 1, idle: 2 };
     return [...this.sessions]
       .filter((s) => s.state !== 'stopped')
       .sort((a, b) => (priority[a.state] ?? 9) - (priority[b.state] ?? 9));

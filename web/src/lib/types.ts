@@ -7,6 +7,7 @@ export interface TaskInfo {
 export interface SubagentInfo {
   id: string;
   type: string;
+  description: string;
   completed: boolean;
   elapsed_ms: number;
 }
@@ -28,7 +29,7 @@ export interface PromptInfo {
 
 export interface SessionInfo {
   id: number;
-  state: 'starting' | 'running' | 'idle' | 'waiting_input' | 'asking' | 'stopped';
+  state: 'running' | 'asking' | 'waiting_permission' | 'waiting_input' | 'idle' | 'stopped';
   command: string;
   cwd: string;
   tasks: TaskInfo[];
