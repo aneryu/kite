@@ -48,12 +48,22 @@ export class WsManager {
   }
 
   sendPromptResponse(text: string, sessionId: number) {
-    this.send({ type: 'prompt_response', text, session_id: sessionId });
+    const payload = { type: 'prompt_response', text, session_id: sessionId };
+    console.log('[WS] sendPromptResponse:', JSON.stringify(payload), 'readyState:', this.ws?.readyState);
+    this.send(payload);
+  }
+
+  isOpen(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   private send(msg: Record<string, unknown>) {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
+      const data = JSON.stringify(msg);
+      console.log('[WS] send:', data);
+      this.ws.send(data);
+    } else {
+      console.warn('[WS] send FAILED - not open, readyState:', this.ws?.readyState);
     }
   }
 

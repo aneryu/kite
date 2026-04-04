@@ -15,9 +15,15 @@ export interface ActivityInfo {
   tool_name: string;
 }
 
+export interface QuestionInfo {
+  question: string;
+  options: string[];
+}
+
 export interface PromptInfo {
   summary: string;
   options: string[];
+  questions?: QuestionInfo[];
 }
 
 export interface SessionInfo {
@@ -29,6 +35,7 @@ export interface SessionInfo {
   subagents: SubagentInfo[];
   activity: ActivityInfo | null;
   prompt: PromptInfo | null;
+  last_message: string | null;
 }
 
 export interface ServerMessage {
@@ -47,6 +54,8 @@ export interface ServerMessage {
   elapsed_ms?: number;
   summary?: string;
   options?: string[];
+  questions?: QuestionInfo[];
   question?: string;
   success?: boolean;
+  last_message?: string | null;
 }

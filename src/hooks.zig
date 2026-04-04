@@ -13,6 +13,7 @@ pub const HookEventType = enum {
     TaskCompleted,
     SubagentStart,
     SubagentStop,
+    PermissionRequest,
 
     pub fn fromString(s: []const u8) ?HookEventType {
         const map = std.StaticStringMap(HookEventType).initComptime(.{
@@ -27,6 +28,7 @@ pub const HookEventType = enum {
             .{ "TaskCompleted", .TaskCompleted },
             .{ "SubagentStart", .SubagentStart },
             .{ "SubagentStop", .SubagentStop },
+            .{ "PermissionRequest", .PermissionRequest },
         });
         return map.get(s);
     }
@@ -44,6 +46,7 @@ pub const HookEventType = enum {
             .TaskCompleted => "TaskCompleted",
             .SubagentStart => "SubagentStart",
             .SubagentStop => "SubagentStop",
+            .PermissionRequest => "PermissionRequest",
         };
     }
 };
@@ -118,10 +121,11 @@ pub const ClaudeCodeConfig = struct {
             \\    "UserPromptSubmit": [{{"hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
             \\    "Notification": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
             \\    "Stop": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
-            \\    "SessionStart": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}]
+            \\    "SessionStart": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "PermissionRequest": [{{"matcher": "AskUserQuestion", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}]
             \\  }}
             \\}}
-        , .{ port, port, port, port, port, port, port, port, port, port, port });
+        , .{ port, port, port, port, port, port, port, port, port, port, port, port });
     }
 };
 
@@ -138,12 +142,26 @@ pub fn sendHookToServer(allocator: std.mem.Allocator, event_name: []const u8, ra
     stream.writeAll(header) catch return null;
     stream.writeAll(raw_json) catch return null;
 
-    // For PreToolUse, wait for response (approval/block)
-    if (std.mem.eql(u8, event_name, "PreToolUse")) {
-        var response_buf: [4096]u8 = undefined;
-        const n = stream.read(&response_buf) catch return null;
-        if (n > 0) {
-            return try allocator.dupe(u8, response_buf[0..n]);
+    // For PreToolUse and PermissionRequest, wait for response
+    if (std.mem.eql(u8, event_name, "PreToolUse") or std.mem.eql(u8, event_name, "PermissionRequest")) {
+        var response_buf: [8192]u8 = undefined;
+        var response_total: usize = 0;
+        // Read with poll to handle multi-chunk responses
+        while (response_total < response_buf.len) {
+            var poll_fds = [1]std.posix.pollfd{
+                .{ .fd = stream.handle, .events = std.posix.POLL.IN, .revents = 0 },
+            };
+            // Wait up to 5 minutes for user to answer
+            const ready = std.posix.poll(&poll_fds, 300_000) catch break;
+            if (ready == 0) break; // timeout
+            const n = stream.read(response_buf[response_total..]) catch break;
+            if (n == 0) break;
+            response_total += n;
+            // Check if we have complete JSON (simple heuristic: ends with })
+            if (response_total > 0 and response_buf[response_total - 1] == '}') break;
+        }
+        if (response_total > 0) {
+            return try allocator.dupe(u8, response_buf[0..response_total]);
         }
     }
 

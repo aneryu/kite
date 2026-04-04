@@ -1,12 +1,12 @@
 import { ws } from '../lib/ws';
 import { fetchSessions } from '../lib/api';
-import type { SessionInfo, ServerMessage } from '../lib/types';
+import type { SessionInfo, ServerMessage, QuestionInfo } from '../lib/types';
 
 type Listener = () => void;
 
 class SessionStore {
   sessions: SessionInfo[] = [];
-  prompts: Map<number, { summary: string; options: string[] }> = new Map();
+  prompts: Map<number, { summary: string; options: string[]; questions?: QuestionInfo[] }> = new Map();
   private listeners: Listener[] = [];
 
   subscribe(fn: Listener) {
@@ -18,11 +18,19 @@ class SessionStore {
 
   async load() {
     try {
-      this.sessions = await fetchSessions();
-      // Restore prompts from API data
+      const newSessions = await fetchSessions();
+      this.sessions = newSessions;
+      // Clean up prompts for sessions that no longer exist
+      const ids = new Set(newSessions.map((s) => s.id));
+      for (const [id] of this.prompts) {
+        if (!ids.has(id)) this.prompts.delete(id);
+      }
+      // Update prompts from server data (don't clear existing valid ones)
       for (const s of this.sessions) {
         if (s.prompt && (s.state === 'asking' || s.state === 'waiting_input')) {
-          this.prompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options });
+          this.prompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options, questions: s.prompt.questions });
+        } else if (s.state !== 'asking' && s.state !== 'waiting_input') {
+          this.prompts.delete(s.id);
         }
       }
       this.notify();
@@ -33,16 +41,20 @@ class SessionStore {
     return this.sessions.find((s) => s.id === id);
   }
 
-  handleMessage(msg: ServerMessage & { sessions?: SessionInfo[] }) {
+  handleMessage(msg: ServerMessage & { sessions?: SessionInfo[]; last_message?: string | null }) {
     // Full state sync from WebSocket connect
     if (msg.type === 'sessions_sync' && msg.sessions) {
       this.sessions = msg.sessions;
-      this.prompts.clear();
+      // Rebuild prompts from server data; clean up stale ones
+      const newPrompts = new Map<number, { summary: string; options: string[]; questions?: QuestionInfo[] }>();
       for (const s of this.sessions) {
         if (s.prompt && (s.state === 'asking' || s.state === 'waiting_input')) {
-          this.prompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options });
+          newPrompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options, questions: s.prompt.questions });
+        } else if (this.prompts.has(s.id) && (s.state === 'asking' || s.state === 'waiting_input')) {
+          newPrompts.set(s.id, this.prompts.get(s.id)!);
         }
       }
+      this.prompts = newPrompts;
       this.notify();
       return;
     }
@@ -99,7 +111,19 @@ class SessionStore {
           break;
         }
         s.state = (msg.state as SessionInfo['state']) ?? 'waiting_input';
-        this.prompts.set(sid, { summary: msg.summary ?? '', options: msg.options ?? [] });
+        // Store questions as-is; summary/options only used for non-question prompts (Stop event)
+        this.prompts.set(sid, {
+          summary: msg.summary ?? '',
+          options: msg.options ?? [],
+          questions: msg.questions,
+        });
+        this.notify();
+        break;
+      }
+      case 'last_message_update': {
+        const s = this.getSession(sid);
+        if (!s) break;
+        s.last_message = msg.last_message ?? null;
         this.notify();
         break;
       }
@@ -107,8 +131,10 @@ class SessionStore {
   }
 
   sorted(): SessionInfo[] {
-    const priority: Record<string, number> = { asking: 0, waiting_input: 0, running: 1, idle: 2, starting: 3, stopped: 4 };
-    return [...this.sessions].sort((a, b) => (priority[a.state] ?? 9) - (priority[b.state] ?? 9));
+    const priority: Record<string, number> = { asking: 0, waiting_input: 0, running: 1, idle: 2, starting: 3 };
+    return [...this.sessions]
+      .filter((s) => s.state !== 'stopped')
+      .sort((a, b) => (priority[a.state] ?? 9) - (priority[b.state] ?? 9));
   }
 }
 

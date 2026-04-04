@@ -122,6 +122,50 @@ pub fn encodeSubagentUpdate(allocator: std.mem.Allocator, session_id: u64, agent
     , .{ session_id, agent_id, agent_type, if (completed) "true" else "false", elapsed_ms });
 }
 
+pub const QuestionInfo = @import("session.zig").PromptQuestion;
+
+/// Encode a prompt_request with full questions array (for AskUserQuestion with multiple questions).
+pub fn encodeAskPromptRequest(allocator: std.mem.Allocator, session_id: u64, questions: []const QuestionInfo, state: @import("session.zig").SessionState) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+
+    const state_str = switch (state) {
+        .starting => "starting",
+        .running => "running",
+        .idle => "idle",
+        .waiting_input => "waiting_input",
+        .asking => "asking",
+        .stopped => "stopped",
+    };
+
+    const header = try std.fmt.allocPrint(allocator,
+        \\{{"type":"prompt_request","session_id":{d},"state":"{s}","questions":[
+    , .{ session_id, state_str });
+    defer allocator.free(header);
+    try buf.appendSlice(allocator, header);
+
+    for (questions, 0..) |q, qi| {
+        if (qi > 0) try buf.append(allocator, ',');
+        try buf.appendSlice(allocator, "{\"question\":\"");
+        const eq = try jsonEscapeAlloc(allocator, q.question);
+        defer allocator.free(eq);
+        try buf.appendSlice(allocator, eq);
+        try buf.appendSlice(allocator, "\",\"options\":[");
+        for (q.options, 0..) |opt, oi| {
+            if (oi > 0) try buf.append(allocator, ',');
+            try buf.append(allocator, '"');
+            const eo = try jsonEscapeAlloc(allocator, opt);
+            defer allocator.free(eo);
+            try buf.appendSlice(allocator, eo);
+            try buf.append(allocator, '"');
+        }
+        try buf.appendSlice(allocator, "]}");
+    }
+
+    try buf.appendSlice(allocator, "]}");
+    return try buf.toOwnedSlice(allocator);
+}
+
 pub fn encodeActivityUpdate(allocator: std.mem.Allocator, session_id: u64, tool_name: ?[]const u8) ![]u8 {
     if (tool_name) |tn| {
         return std.fmt.allocPrint(allocator,
@@ -146,6 +190,14 @@ pub fn encodeSessionStateChange(allocator: std.mem.Allocator, session_id: u64, s
     return std.fmt.allocPrint(allocator,
         \\{{"type":"session_state_change","session_id":{d},"state":"{s}"}}
     , .{ session_id, state_str });
+}
+
+pub fn encodeLastMessageUpdate(allocator: std.mem.Allocator, session_id: u64, message: []const u8) ![]u8 {
+    const escaped = try jsonEscapeAlloc(allocator, message);
+    defer allocator.free(escaped);
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"last_message_update","session_id":{d},"last_message":"{s}"}}
+    , .{ session_id, escaped });
 }
 
 pub const jsonEscapeAllocPublic = jsonEscapeAlloc;
@@ -174,6 +226,62 @@ fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+/// Extract the "tool_input":{...} JSON value from a raw hook body.
+pub fn extractToolInputJson(allocator: std.mem.Allocator, raw_json: []const u8) []const u8 {
+    const key = "\"tool_input\":";
+    const idx = std.mem.indexOf(u8, raw_json, key) orelse return "";
+    var pos = idx + key.len;
+    while (pos < raw_json.len and (raw_json[pos] == ' ' or raw_json[pos] == '\n' or raw_json[pos] == '\r' or raw_json[pos] == '\t')) pos += 1;
+    if (pos >= raw_json.len or raw_json[pos] != '{') return "";
+    var depth: usize = 0;
+    var in_string = false;
+    var escape = false;
+    var i = pos;
+    while (i < raw_json.len) : (i += 1) {
+        const ch = raw_json[i];
+        if (escape) {
+            escape = false;
+            continue;
+        }
+        if (ch == '\\' and in_string) {
+            escape = true;
+            continue;
+        }
+        if (ch == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (in_string) continue;
+        if (ch == '{') depth += 1;
+        if (ch == '}') {
+            depth -= 1;
+            if (depth == 0) {
+                return allocator.dupe(u8, raw_json[pos .. i + 1]) catch "";
+            }
+        }
+    }
+    return "";
+}
+
+/// Build updatedInput JSON: original tool_input with "answers" field injected.
+/// answers_json is the raw JSON answers map, e.g. {"Which lesson?":"Option A"}
+pub fn buildUpdatedInput(allocator: std.mem.Allocator, tool_input_json: []const u8, answers_json: []const u8) ![]u8 {
+    if (tool_input_json.len > 1 and tool_input_json[tool_input_json.len - 1] == '}') {
+        return std.fmt.allocPrint(allocator, "{s},\"answers\":{s}}}", .{ tool_input_json[0 .. tool_input_json.len - 1], answers_json });
+    }
+    return std.fmt.allocPrint(allocator, "{{\"answers\":{s}}}", .{answers_json});
+}
+
+/// Build the full PermissionRequest hook output JSON.
+/// Format: {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{...}}}}
+pub fn buildPermissionHookOutput(allocator: std.mem.Allocator, tool_input_json: []const u8, answers_json: []const u8) ![]u8 {
+    const updated_input = try buildUpdatedInput(allocator, tool_input_json, answers_json);
+    defer allocator.free(updated_input);
+    return std.fmt.allocPrint(allocator,
+        \\{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{{"behavior":"allow","updatedInput":{s}}}}}}}
+    , .{updated_input});
 }
 
 test "encodePromptRequest" {

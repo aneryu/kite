@@ -205,7 +205,9 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
             return;
         };
 
-        const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",\"rows\":{d},\"cols\":{d}}}", .{ config.command, term_rows, term_cols });
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd = std.posix.getcwd(&cwd_buf) catch "";
+        const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",\"cwd\":\"{s}\",\"rows\":{d},\"cols\":{d}}}", .{ config.command, cwd, term_rows, term_cols });
         defer allocator.free(body);
 
         const request = try std.fmt.allocPrint(allocator,
@@ -348,6 +350,16 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Restore terminal before printing
     if (is_tty) terminal.restoreMode(stdin_fd);
 
+    // Disable mouse tracking modes that the child process may have enabled.
+    // Without this, the terminal keeps reporting mouse events as garbled text.
+    _ = posix.write(stdout_fd,
+        "\x1b[?1000l" // disable normal mouse tracking
+        ++ "\x1b[?1002l" // disable button-event tracking
+        ++ "\x1b[?1003l" // disable all-motion tracking
+        ++ "\x1b[?1006l" // disable SGR extended mouse mode
+        ++ "\x1b[?25h"   // ensure cursor is visible
+    ) catch {};
+
     try stdout.print("\n  Session ended.\n", .{});
     try stdout.flush();
 }
@@ -436,21 +448,25 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
         return true; // Caller should NOT close conn; the thread owns it now
     }
 
-    // Normal hook event handling
-    _ = lines.next(); // length
-    const rest = lines.rest();
-
-    // May need more data for large payloads
+    // Normal hook event handling — read remaining data before parsing
+    // The first read may not have received the full JSON body.
     while (total < buf.len) {
         var poll_fds = [1]posix.pollfd{
             .{ .fd = conn, .events = posix.POLL.IN, .revents = 0 },
         };
-        const ready = posix.poll(&poll_fds, 10) catch break;
+        const ready = posix.poll(&poll_fds, 50) catch break;
         if (ready == 0) break;
         const n = posix.read(conn, buf[total..]) catch break;
         if (n == 0) break;
         total += n;
     }
+
+    // Re-parse full data to get rest (JSON body) after all reads complete
+    const full_data = buf[0..total];
+    var full_lines = std.mem.splitScalar(u8, full_data, '\n');
+    _ = full_lines.next(); // event_name (already parsed above)
+    _ = full_lines.next(); // length
+    const rest = full_lines.rest();
 
     var tool_name: []const u8 = "";
     var session_id: u64 = 1;
@@ -471,11 +487,60 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
 
     session_manager.handleHookEvent(session_id, event_name, rest);
 
+    logStderr("[kite-ipc] hook={s} tool={s} session_id={d}", .{ event_name, tool_name, session_id });
+
     if (std.mem.eql(u8, event_name, "PreToolUse")) {
+        // PreToolUse: just approve and pass through
         _ = posix.write(conn, "{}") catch {};
+    } else if (std.mem.eql(u8, event_name, "PermissionRequest") and std.mem.eql(u8, tool_name, "AskUserQuestion")) {
+        // PermissionRequest/AskUserQuestion: spawn thread to block and return answer.
+        // We already called handleHookEvent above (which set state to .asking and broadcast).
+        // Now we need to create PendingAsk, wait for user answer, return hook output.
+        const pa = session_manager.createPendingAsk(session_id) catch null;
+        if (pa) |pending| {
+            pending.tool_input_json = protocol.extractToolInputJson(allocator, rest);
+        }
+
+        // Spawn thread so IPC listener isn't blocked for other events
+        const thread = std.Thread.spawn(.{}, handlePermissionRequestIpc, .{ allocator, session_manager, session_id, conn }) catch {
+            _ = posix.write(conn, "{}") catch {};
+            return false;
+        };
+        thread.detach();
+        return true; // Thread owns conn now, caller should NOT close
     }
 
     return false;
+}
+
+/// Thread handler for PermissionRequest/AskUserQuestion via IPC.
+/// Blocks until user responds, writes hook output, closes conn.
+fn handlePermissionRequestIpc(allocator: std.mem.Allocator, session_manager: *SessionManager, session_id: u64, conn: posix.fd_t) void {
+    defer posix.close(conn);
+
+    logStderr("[kite-ipc] Blocking PermissionRequest for AskUserQuestion (session {d})", .{session_id});
+    const result = session_manager.waitPendingAsk(session_id);
+    if (result) |r| {
+        defer allocator.free(r.response);
+        defer if (r.tool_input_json.len > 0) allocator.free(r.tool_input_json);
+
+        const hook_output = protocol.buildPermissionHookOutput(allocator, r.tool_input_json, r.response) catch {
+            _ = posix.write(conn, "{}") catch {};
+            return;
+        };
+        defer allocator.free(hook_output);
+        logStderr("[kite-ipc] PermissionRequest response: {s}", .{hook_output});
+        _ = posix.write(conn, hook_output) catch {};
+    } else {
+        _ = posix.write(conn, "{}") catch {};
+    }
+}
+
+fn logStderr(comptime fmt: []const u8, args: anytype) void {
+    const stderr = std.fs.File.stderr();
+    const out = std.fmt.allocPrint(std.heap.page_allocator, fmt ++ "\n", args) catch return;
+    defer std.heap.page_allocator.free(out);
+    _ = stderr.write(out) catch {};
 }
 
 const HOOK_LOG_PATH = "/tmp/kite-hooks.jsonl";

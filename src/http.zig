@@ -39,6 +39,13 @@ pub const Server = struct {
     static_dir: ?[]const u8 = null,
     cors_enabled: bool = false,
 
+    fn log(_: *const Server, comptime fmt: []const u8, args: anytype) void {
+        const stderr = std.fs.File.stderr();
+        const msg = std.fmt.allocPrint(std.heap.page_allocator, "[kite] " ++ fmt ++ "\n", args) catch return;
+        defer std.heap.page_allocator.free(msg);
+        _ = stderr.write(msg) catch {};
+    }
+
     fn apiHeaders(self: *const Server) []const http.Header {
         if (self.cors_enabled) return &json_cors_headers;
         return &json_header;
@@ -157,7 +164,12 @@ pub const Server = struct {
             const message = ws.readSmallMessage() catch break;
             const data = message.data;
 
-            var parsed = protocol.parseClientMessage(self.allocator, data) catch continue;
+            self.log("WS recv: {s}", .{data});
+
+            var parsed = protocol.parseClientMessage(self.allocator, data) catch {
+                self.log("WS parse error for: {s}", .{data});
+                continue;
+            };
             defer parsed.deinit();
             const msg = parsed.value();
 
@@ -171,7 +183,10 @@ pub const Server = struct {
                 continue;
             }
 
-            if (!client.authenticated) continue;
+            if (!client.authenticated) {
+                self.log("WS msg dropped (not authenticated): {s}", .{msg.@"type"});
+                continue;
+            }
 
             if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
                 if (msg.data) |input_data| {
@@ -186,12 +201,10 @@ pub const Server = struct {
             } else if (std.mem.eql(u8, msg.@"type", "prompt_response")) {
                 if (msg.text) |text| {
                     const sid = msg.session_id orelse 1;
-                    var input_buf: [4097]u8 = undefined;
-                    if (text.len < input_buf.len - 1) {
-                        @memcpy(input_buf[0..text.len], text);
-                        input_buf[text.len] = '\n';
-                        self.session_manager.writeToSession(sid, input_buf[0 .. text.len + 1]) catch {};
-                    }
+                    self.log("WS prompt_response: session_id={d} text={s}", .{ sid, text });
+                    self.session_manager.resolvePromptResponse(sid, text);
+                } else {
+                    self.log("WS prompt_response: text is null", .{});
                 }
             }
         }
@@ -287,6 +300,7 @@ pub const Server = struct {
             hook_event_name: []const u8 = "",
             session_id: []const u8 = "",
             tool_name: ?[]const u8 = null,
+            stop_reason: ?[]const u8 = null,
         };
         const parsed = std.json.parseFromSlice(HookPayload, self.allocator, body_slice, .{
             .ignore_unknown_fields = true,
@@ -313,20 +327,53 @@ pub const Server = struct {
             session_id = std.fmt.parseInt(u64, parsed.value.session_id, 10) catch 1;
         }
 
-        // Broadcast hook event to WebSocket clients
         const tool_name = parsed.value.tool_name orelse "";
+        const is_permission_ask = std.mem.eql(u8, event_name, "PermissionRequest") and
+            std.mem.eql(u8, tool_name, "AskUserQuestion");
+
+        // For PermissionRequest/AskUserQuestion: create pending ask + extract tool_input
+        if (is_permission_ask) {
+            const pa = self.session_manager.createPendingAsk(session_id) catch null;
+            if (pa) |pending| {
+                pending.tool_input_json = protocol.extractToolInputJson(self.allocator, body_slice);
+            }
+        }
+
+        // Broadcast hook event to WebSocket clients
         const msg = protocol.encodeHookEvent(self.allocator, event_name, tool_name, body_slice, session_id) catch null;
         if (msg) |m| {
             defer self.allocator.free(m);
             self.broadcaster.broadcast(m);
         }
 
-        // Update session state
+        // Update session state (shows prompt on frontend)
         self.session_manager.handleHookEvent(session_id, event_name, body_slice);
 
-        try head.respond("{\"ok\":true}", .{
-            .extra_headers = self.apiHeaders(),
-        });
+        self.log("Hook {s}: tool={s} session_id={d}", .{ event_name, tool_name, session_id });
+
+        if (is_permission_ask) {
+            // Block until user responds via WebSocket
+            self.log("Blocking PermissionRequest for AskUserQuestion (session {d})", .{session_id});
+            const result = self.session_manager.waitPendingAsk(session_id);
+            if (result) |r| {
+                defer self.allocator.free(r.response);
+                defer if (r.tool_input_json.len > 0) self.allocator.free(r.tool_input_json);
+
+                const hook_output = protocol.buildPermissionHookOutput(self.allocator, r.tool_input_json, r.response) catch {
+                    try head.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
+                    return;
+                };
+                defer self.allocator.free(hook_output);
+                self.log("PermissionRequest response: {s}", .{hook_output});
+                try head.respond(hook_output, .{ .extra_headers = self.apiHeaders() });
+            } else {
+                try head.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
+            }
+        } else {
+            try head.respond("{\"ok\":true}", .{
+                .extra_headers = self.apiHeaders(),
+            });
+        }
     }
 
     fn sendSessionsSync(self: *Server, client: *ws_mod.WsClient) void {
@@ -398,9 +445,21 @@ pub const Server = struct {
             try json_buf.appendSlice(self.allocator, ",\"activity\":null");
         }
 
+        // last_message
+        const last_msg = if (@hasField(@TypeOf(s), "last_message")) s.last_message else "";
+        if (last_msg.len > 0) {
+            try json_buf.appendSlice(self.allocator, ",\"last_message\":\"");
+            const esc_lm = protocol.jsonEscapeAllocPublic(self.allocator, last_msg) catch "";
+            defer if (esc_lm.len > 0) self.allocator.free(esc_lm);
+            try json_buf.appendSlice(self.allocator, esc_lm);
+            try json_buf.appendSlice(self.allocator, "\"");
+        } else {
+            try json_buf.appendSlice(self.allocator, ",\"last_message\":null");
+        }
+
         // prompt
         const has_prompt = if (@hasField(@TypeOf(s), "prompt_summary"))
-            s.prompt_summary.len > 0 or s.prompt_options.len > 0
+            s.prompt_summary.len > 0 or s.prompt_options.len > 0 or s.prompt_questions.len > 0
         else
             false;
         if (has_prompt) {
@@ -417,11 +476,38 @@ pub const Server = struct {
                 try json_buf.appendSlice(self.allocator, eo);
                 try json_buf.appendSlice(self.allocator, "\"");
             }
-            try json_buf.appendSlice(self.allocator, "]}");
+            try json_buf.appendSlice(self.allocator, "]");
+            // questions array
+            try self.serializeQuestions(json_buf, s.prompt_questions);
+            try json_buf.appendSlice(self.allocator, "}");
         } else {
             try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
         }
         try json_buf.appendSlice(self.allocator, "}");
+    }
+
+    fn serializeQuestions(self: *Server, json_buf: *std.ArrayList(u8), questions: []const @import("session.zig").PromptQuestion) !void {
+        if (questions.len > 0) {
+            try json_buf.appendSlice(self.allocator, ",\"questions\":[");
+            for (questions, 0..) |q, qi| {
+                if (qi > 0) try json_buf.appendSlice(self.allocator, ",");
+                try json_buf.appendSlice(self.allocator, "{\"question\":\"");
+                const eq = protocol.jsonEscapeAllocPublic(self.allocator, q.question) catch "";
+                defer if (eq.len > 0) self.allocator.free(eq);
+                try json_buf.appendSlice(self.allocator, eq);
+                try json_buf.appendSlice(self.allocator, "\",\"options\":[");
+                for (q.options, 0..) |opt, oi| {
+                    if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
+                    try json_buf.appendSlice(self.allocator, "\"");
+                    const eo = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
+                    defer if (eo.len > 0) self.allocator.free(eo);
+                    try json_buf.appendSlice(self.allocator, eo);
+                    try json_buf.appendSlice(self.allocator, "\"");
+                }
+                try json_buf.appendSlice(self.allocator, "]}");
+            }
+            try json_buf.appendSlice(self.allocator, "]");
+        }
     }
 
     fn handleSessionsApi(self: *Server, head: *http.Server.Request) !void {
@@ -487,7 +573,7 @@ pub const Server = struct {
                     try json_buf.appendSlice(self.allocator, ",\"activity\":null");
                 }
                 // prompt context
-                if (s.prompt_summary.len > 0 or s.prompt_options.len > 0) {
+                if (s.prompt_summary.len > 0 or s.prompt_options.len > 0 or s.prompt_questions.len > 0) {
                     try json_buf.appendSlice(self.allocator, ",\"prompt\":{\"summary\":\"");
                     const esc_summary = protocol.jsonEscapeAllocPublic(self.allocator, s.prompt_summary) catch "";
                     defer if (esc_summary.len > 0) self.allocator.free(esc_summary);
@@ -501,9 +587,21 @@ pub const Server = struct {
                         try json_buf.appendSlice(self.allocator, esc_opt);
                         try json_buf.appendSlice(self.allocator, "\"");
                     }
-                    try json_buf.appendSlice(self.allocator, "]}");
+                    try json_buf.appendSlice(self.allocator, "]");
+                    try self.serializeQuestions(&json_buf, s.prompt_questions);
+                    try json_buf.appendSlice(self.allocator, "}");
                 } else {
                     try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
+                }
+                // last_message
+                if (s.last_message.len > 0) {
+                    try json_buf.appendSlice(self.allocator, ",\"last_message\":\"");
+                    const esc_lm = protocol.jsonEscapeAllocPublic(self.allocator, s.last_message) catch "";
+                    defer if (esc_lm.len > 0) self.allocator.free(esc_lm);
+                    try json_buf.appendSlice(self.allocator, esc_lm);
+                    try json_buf.appendSlice(self.allocator, "\"");
+                } else {
+                    try json_buf.appendSlice(self.allocator, ",\"last_message\":null");
                 }
                 try json_buf.appendSlice(self.allocator, "}");
             }
@@ -600,7 +698,9 @@ pub const Server = struct {
                     try json_buf.appendSlice(self.allocator, esc_opt);
                     try json_buf.appendSlice(self.allocator, "\"");
                 }
-                try json_buf.appendSlice(self.allocator, "]}");
+                try json_buf.appendSlice(self.allocator, "]");
+                try self.serializeQuestions(&json_buf, pc.questions);
+                try json_buf.appendSlice(self.allocator, "}");
             } else {
                 try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
             }

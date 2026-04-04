@@ -28,6 +28,10 @@ pub const Pty = struct {
     }
 
     pub fn spawn(self: *Pty, argv: []const ?[*:0]const u8, env: ?[*:null]const ?[*:0]const u8) SpawnError!void {
+        self.spawnCwd(argv, env, null);
+    }
+
+    pub fn spawnCwd(self: *Pty, argv: []const ?[*:0]const u8, env: ?[*:null]const ?[*:0]const u8, cwd: ?[*:0]const u8) SpawnError!void {
         const pid = posix.fork() catch return error.ForkFailed;
 
         if (pid == 0) {
@@ -38,6 +42,11 @@ pub const Pty = struct {
 
             // Set controlling terminal
             _ = c.ioctl(self.slave, c.TIOCSCTTY, @as(c_int, 0));
+
+            // Change working directory if specified
+            if (cwd) |dir| {
+                _ = std.c.chdir(dir);
+            }
 
             // Redirect stdio to slave PTY
             posix.dup2(self.slave, 0) catch {};

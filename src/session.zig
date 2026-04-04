@@ -60,10 +60,15 @@ pub const SessionState = enum {
     stopped,
 };
 
+pub const PromptQuestion = struct {
+    question: []const u8,
+    options: []const []const u8,
+};
+
 pub const PromptContext = struct {
     summary: []const u8,
     options: []const []const u8,
-    raw_json: []const u8 = "",
+    questions: []const PromptQuestion = &.{},
 };
 
 pub const HookEvent = struct {
@@ -108,6 +113,7 @@ pub const Session = struct {
     tasks: std.ArrayList(TaskInfo),
     subagents: std.ArrayList(SubagentInfo),
     current_activity: ?ActivityInfo = null,
+    last_message: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator, id: u64) !Session {
         return .{
@@ -139,6 +145,7 @@ pub const Session = struct {
             self.allocator.free(act.tool_name);
             if (act.summary.len > 0) self.allocator.free(act.summary);
         }
+        if (self.last_message.len > 0) self.allocator.free(self.last_message);
     }
 
     pub fn appendTerminalOutput(self: *Session, data: []const u8) void {
