@@ -5,16 +5,14 @@ const web = @import("web.zig");
 const auth_mod = @import("auth.zig");
 const protocol = @import("protocol.zig");
 const ws_mod = @import("ws.zig");
-const session_mod = @import("session.zig");
+const SessionManager = @import("session_manager.zig").SessionManager;
 
 pub const Server = struct {
     allocator: std.mem.Allocator,
     address: net.Address,
     auth: *auth_mod.Auth,
     broadcaster: *ws_mod.WsBroadcaster,
-    session: *session_mod.Session,
-    on_terminal_input: *const fn ([]const u8) void,
-    on_resize: *const fn (u16, u16) void,
+    session_manager: *SessionManager,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 
     pub fn init(
@@ -23,9 +21,7 @@ pub const Server = struct {
         port: u16,
         a: *auth_mod.Auth,
         broadcaster: *ws_mod.WsBroadcaster,
-        sess: *session_mod.Session,
-        on_input: *const fn ([]const u8) void,
-        on_resize_cb: *const fn (u16, u16) void,
+        session_manager: *SessionManager,
     ) !Server {
         const address = try net.Address.parseIp(bind_addr, port);
         return .{
@@ -33,9 +29,7 @@ pub const Server = struct {
             .address = address,
             .auth = a,
             .broadcaster = broadcaster,
-            .session = sess,
-            .on_terminal_input = on_input,
-            .on_resize = on_resize_cb,
+            .session_manager = session_manager,
         };
     }
 
@@ -78,8 +72,13 @@ pub const Server = struct {
             return;
         }
 
-        if (std.mem.startsWith(u8, path, "/api/session")) {
-            self.handleSessionApi(&head) catch {};
+        if (std.mem.eql(u8, path, "/api/sessions") and head.head.method == .POST) {
+            self.handleCreateSession(&head) catch {};
+            return;
+        }
+
+        if (std.mem.startsWith(u8, path, "/api/sessions")) {
+            self.handleSessionsApi(&head) catch {};
             return;
         }
 
@@ -99,19 +98,21 @@ pub const Server = struct {
         defer self.broadcaster.removeClient(&client);
 
         // Send initial terminal history
-        const history = self.session.terminal_buffer.slice();
-        if (history.first.len > 0) {
-            const msg = protocol.encodeTerminalOutput(self.allocator, history.first) catch null;
-            if (msg) |m| {
-                defer self.allocator.free(m);
-                client.send(m);
+        if (self.session_manager.getSession(1)) |session| {
+            const history = session.terminal_buffer.slice();
+            if (history.first.len > 0) {
+                const msg = protocol.encodeTerminalOutput(self.allocator, history.first) catch null;
+                if (msg) |m| {
+                    defer self.allocator.free(m);
+                    client.send(m);
+                }
             }
-        }
-        if (history.second.len > 0) {
-            const msg = protocol.encodeTerminalOutput(self.allocator, history.second) catch null;
-            if (msg) |m| {
-                defer self.allocator.free(m);
-                client.send(m);
+            if (history.second.len > 0) {
+                const msg = protocol.encodeTerminalOutput(self.allocator, history.second) catch null;
+                if (msg) |m| {
+                    defer self.allocator.free(m);
+                    client.send(m);
+                }
             }
         }
 
@@ -137,11 +138,23 @@ pub const Server = struct {
 
             if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
                 if (msg.data) |input_data| {
-                    self.on_terminal_input(input_data);
+                    const sid = msg.session_id orelse 1;
+                    self.session_manager.writeToSession(sid, input_data) catch {};
                 }
             } else if (std.mem.eql(u8, msg.@"type", "resize")) {
                 if (msg.cols != null and msg.rows != null) {
-                    self.on_resize(msg.rows.?, msg.cols.?);
+                    const sid = msg.session_id orelse 1;
+                    self.session_manager.resizeSession(sid, msg.rows.?, msg.cols.?);
+                }
+            } else if (std.mem.eql(u8, msg.@"type", "prompt_response")) {
+                if (msg.text) |text| {
+                    const sid = msg.session_id orelse 1;
+                    var input_buf: [4097]u8 = undefined;
+                    if (text.len < input_buf.len - 1) {
+                        @memcpy(input_buf[0..text.len], text);
+                        input_buf[text.len] = '\n';
+                        self.session_manager.writeToSession(sid, input_buf[0 .. text.len + 1]) catch {};
+                    }
                 }
             }
         }
@@ -177,18 +190,98 @@ pub const Server = struct {
         }
     }
 
-    fn handleSessionApi(self: *Server, head: *http.Server.Request) !void {
-        const state_str = switch (self.session.state) {
-            .starting => "starting",
-            .running => "running",
-            .waiting_approval => "waiting_approval",
-            .stopped => "stopped",
+    fn handleCreateSession(self: *Server, head: *http.Server.Request) !void {
+        var body_buf: [2048]u8 = undefined;
+        const io_reader = head.readerExpectNone(&body_buf);
+        var body: [2048]u8 = undefined;
+        var bufs: [1][]u8 = .{&body};
+        const body_len = io_reader.readVec(&bufs) catch 0;
+        const body_slice = body[0..body_len];
+
+        const CreateReq = struct { command: []const u8 = "claude", cwd: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(CreateReq, self.allocator, body_slice, .{
+            .ignore_unknown_fields = true,
+        }) catch {
+            try head.respond("{\"error\":\"invalid json\"}", .{
+                .status = .bad_request,
+                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            });
+            return;
         };
-        const response = protocol.encodeSessionStatus(self.allocator, state_str, self.session.id) catch return;
+        defer parsed.deinit();
+
+        const session_id = self.session_manager.createSession(.{
+            .command = parsed.value.command,
+            .cwd = parsed.value.cwd,
+        }) catch {
+            try head.respond("{\"error\":\"failed to create session\"}", .{
+                .status = .internal_server_error,
+                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            });
+            return;
+        };
+
+        const response = std.fmt.allocPrint(self.allocator, "{{\"session_id\":{d}}}", .{session_id}) catch return;
         defer self.allocator.free(response);
         try head.respond(response, .{
             .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
         });
+    }
+
+    fn handleSessionsApi(self: *Server, head: *http.Server.Request) !void {
+        const path = head.head.target;
+
+        if (std.mem.eql(u8, path, "/api/sessions")) {
+            const sessions = self.session_manager.listSessions(self.allocator) catch return;
+            defer self.allocator.free(sessions);
+
+            var json_buf: std.ArrayList(u8) = .empty;
+            defer json_buf.deinit(self.allocator);
+            try json_buf.appendSlice(self.allocator, "[");
+            for (sessions, 0..) |s, i| {
+                if (i > 0) try json_buf.appendSlice(self.allocator, ",");
+                const state_str = switch (s.state) {
+                    .starting => "starting",
+                    .running => "running",
+                    .waiting_input => "waiting_input",
+                    .stopped => "stopped",
+                };
+                const entry = std.fmt.allocPrint(self.allocator,
+                    \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
+                , .{ s.id, state_str, s.command, s.cwd }) catch continue;
+                defer self.allocator.free(entry);
+                try json_buf.appendSlice(self.allocator, entry);
+            }
+            try json_buf.appendSlice(self.allocator, "]");
+            try head.respond(json_buf.items, .{
+                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            });
+            return;
+        }
+
+        const sessions = self.session_manager.listSessions(self.allocator) catch return;
+        defer self.allocator.free(sessions);
+        if (sessions.len > 0) {
+            const s = sessions[0];
+            const state_str = switch (s.state) {
+                .starting => "starting",
+                .running => "running",
+                .waiting_input => "waiting_input",
+                .stopped => "stopped",
+            };
+            const response = std.fmt.allocPrint(self.allocator,
+                \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
+            , .{ s.id, state_str, s.command, s.cwd }) catch return;
+            defer self.allocator.free(response);
+            try head.respond(response, .{
+                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            });
+        } else {
+            try head.respond("{\"error\":\"no sessions\"}", .{
+                .status = .not_found,
+                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            });
+        }
     }
 
     fn serveStaticFile(_: *Server, head: *http.Server.Request, path: []const u8) !void {
