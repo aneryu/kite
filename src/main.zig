@@ -164,7 +164,15 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var stdout_writer = stdout_file.writer(&stdout_buf);
     const stdout = &stdout_writer.interface;
 
-    // Step 1: Create session via HTTP API
+    // Step 1: Create session via HTTP API (include terminal size)
+    const stdin_fd = posix.STDIN_FILENO;
+    var term_rows: u16 = 24;
+    var term_cols: u16 = 80;
+    if (terminal.getWindowSize(stdin_fd)) |ws| {
+        term_rows = ws.rows;
+        term_cols = ws.cols;
+    }
+
     const address = try std.net.Address.parseIp("127.0.0.1", config.port);
     const http_stream = std.net.tcpConnectToAddress(address) catch {
         try stdout.print("Cannot connect to kite daemon. Is it running? (kite start)\n", .{});
@@ -172,7 +180,7 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     };
 
-    const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\"}}", .{config.command});
+    const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",\"rows\":{d},\"cols\":{d}}}", .{ config.command, term_rows, term_cols });
     defer allocator.free(body);
 
     const request = try std.fmt.allocPrint(allocator,
@@ -241,7 +249,6 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // Step 3: Enter raw terminal mode and relay I/O
-    const stdin_fd = posix.STDIN_FILENO;
     const stdout_fd = posix.STDOUT_FILENO;
     const is_tty = posix.isatty(stdin_fd);
 

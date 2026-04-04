@@ -25,6 +25,8 @@ pub const SessionManager = struct {
     pub const CreateOptions = struct {
         command: []const u8 = "claude",
         cwd: []const u8 = "",
+        rows: u16 = 24,
+        cols: u16 = 80,
     };
 
     pub fn init(allocator: std.mem.Allocator, broadcaster: *WsBroadcaster) SessionManager {
@@ -64,6 +66,9 @@ pub const SessionManager = struct {
         ms.session.state = .starting;
         ms.session.command = opts.command;
         ms.session.cwd = opts.cwd;
+
+        // Set PTY window size BEFORE spawn so the child sees correct dimensions
+        ms.pty.setWindowSize(opts.rows, opts.cols);
 
         const cmd_z = try self.allocator.dupeZ(u8, opts.command);
         defer self.allocator.free(cmd_z);

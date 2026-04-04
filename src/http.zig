@@ -198,7 +198,12 @@ pub const Server = struct {
         const body_len = io_reader.readVec(&bufs) catch 0;
         const body_slice = body[0..body_len];
 
-        const CreateReq = struct { command: []const u8 = "claude", cwd: []const u8 = "" };
+        const CreateReq = struct {
+            command: []const u8 = "claude",
+            cwd: []const u8 = "",
+            rows: u16 = 24,
+            cols: u16 = 80,
+        };
         const parsed = std.json.parseFromSlice(CreateReq, self.allocator, body_slice, .{
             .ignore_unknown_fields = true,
         }) catch {
@@ -213,6 +218,8 @@ pub const Server = struct {
         const session_id = self.session_manager.createSession(.{
             .command = parsed.value.command,
             .cwd = parsed.value.cwd,
+            .rows = parsed.value.rows,
+            .cols = parsed.value.cols,
         }) catch {
             try head.respond("{\"error\":\"failed to create session\"}", .{
                 .status = .internal_server_error,
