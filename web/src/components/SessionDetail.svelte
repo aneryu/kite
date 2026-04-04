@@ -37,8 +37,13 @@
     <button onclick={() => sendKey('\x1b')}>Esc</button>
   </div>
 
-  {#if session?.state === 'waiting_input'}
-    <PromptOverlay onsubmit={handlePromptSubmit} />
+  {#if session?.state === 'waiting_input' || session?.state === 'asking'}
+    {@const prompt = sessionStore.prompts.get(sessionId)}
+    <PromptOverlay
+      options={prompt?.options ?? []}
+      summary={prompt?.summary ?? ''}
+      onsubmit={handlePromptSubmit}
+    />
   {/if}
 </div>
 
@@ -52,6 +57,8 @@
   .status.waiting_input { background: var(--warn); color: #000; }
   .status.stopped { background: var(--danger); color: #fff; }
   .status.starting { background: var(--accent); color: #000; }
+  .status.idle { background: var(--accent); color: #000; }
+  .status.asking { background: var(--warn); color: #000; }
   .actions { display: flex; gap: 0; flex-shrink: 0; border-top: 1px solid var(--border); background: var(--card-bg); }
   .actions button { flex: 1; padding: 0.6rem; border: none; border-right: 1px solid var(--border); background: transparent; color: var(--fg); font-size: 0.8rem; cursor: pointer; font-family: monospace; }
   .actions button:last-child { border-right: none; }

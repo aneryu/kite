@@ -361,7 +361,9 @@ pub const Server = struct {
                 const state_str = switch (s.state) {
                     .starting => "starting",
                     .running => "running",
+                    .idle => "idle",
                     .waiting_input => "waiting_input",
+                    .asking => "asking",
                     .stopped => "stopped",
                 };
                 const entry = std.fmt.allocPrint(self.allocator,
@@ -437,7 +439,9 @@ pub const Server = struct {
             const state_str = switch (session.state) {
                 .starting => "starting",
                 .running => "running",
+                .idle => "idle",
                 .waiting_input => "waiting_input",
+                .asking => "asking",
                 .stopped => "stopped",
             };
             var json_buf: std.ArrayList(u8) = .empty;

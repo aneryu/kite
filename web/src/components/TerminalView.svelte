@@ -17,7 +17,7 @@
   onMount(async () => {
     terminal = new Terminal({
       fontSize: 14,
-      fontFamily: "'Hack Nerd Font Mono', 'Fira Code', monospace",
+      fontFamily: "'Hack Nerd Font Mono', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', monospace",
       theme: { background: '#0a0a0a', foreground: '#e0e0e0', cursor: '#4fc3f7' },
       cursorBlink: true,
       scrollback: 5000,

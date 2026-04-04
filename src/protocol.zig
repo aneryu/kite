@@ -129,7 +129,9 @@ pub fn encodeSessionStateChange(allocator: std.mem.Allocator, session_id: u64, s
     const state_str = switch (state) {
         .starting => "starting",
         .running => "running",
+        .idle => "idle",
         .waiting_input => "waiting_input",
+        .asking => "asking",
         .stopped => "stopped",
     };
     return std.fmt.allocPrint(allocator,

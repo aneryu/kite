@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { onsubmit }: { onsubmit: (text: string) => void } = $props();
+  let { options = [], summary = '', onsubmit }: { options?: string[]; summary?: string; onsubmit: (text: string) => void } = $props();
   let inputText = $state('');
 
   function handleSubmit() {
@@ -15,10 +15,16 @@
 
 <div class="overlay">
   <div class="prompt-bar">
-    <div class="options">
-      <button class="opt-btn" onclick={() => handleOption('Yes')}>Yes</button>
-      <button class="opt-btn" onclick={() => handleOption('No')}>No</button>
-    </div>
+    {#if summary}
+      <div class="summary">{summary}</div>
+    {/if}
+    {#if options.length > 0}
+      <div class="options">
+        {#each options as opt}
+          <button class="opt-btn" onclick={() => handleOption(opt)}>{opt}</button>
+        {/each}
+      </div>
+    {/if}
     <div class="input-row">
       <input type="text" bind:value={inputText} onkeydown={handleKeydown} placeholder="Type a response..." />
       <button class="send-btn" onclick={handleSubmit}>Send</button>
@@ -29,6 +35,7 @@
 <style>
   .overlay { position: absolute; bottom: 0; left: 0; right: 0; z-index: 20; padding-bottom: env(safe-area-inset-bottom, 0); }
   .prompt-bar { background: var(--card-bg); border-top: 2px solid var(--warn); padding: 0.75rem; }
+  .summary { font-size: 0.85rem; color: #ccc; margin-bottom: 0.5rem; max-height: 3rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
   .options { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
   .opt-btn { padding: 0.4rem 1rem; border: 1px solid var(--accent); border-radius: 20px; background: transparent; color: var(--accent); font-size: 0.85rem; cursor: pointer; }
   .opt-btn:active { background: var(--accent); color: #000; }

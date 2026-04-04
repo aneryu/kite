@@ -210,7 +210,11 @@ pub const SessionManager = struct {
                 const msg = protocol.encodePromptRequest(self.allocator, session.id, summary, options) catch return;
                 defer self.allocator.free(msg);
                 self.broadcaster.broadcast(msg);
+            } else if (std.mem.eql(u8, parsed.value.stop_reason, "end_turn")) {
+                session.state = .idle;
             }
+        } else if (std.mem.eql(u8, event_name, "UserPromptSubmit")) {
+            session.clearPromptContext();
         } else if (std.mem.eql(u8, event_name, "SessionStart")) {
             session.state = .running;
             session.clearPromptContext();
@@ -223,6 +227,9 @@ pub const SessionManager = struct {
                 if (act.summary.len > 0) self.allocator.free(act.summary);
             }
             session.current_activity = null;
+            if (session.state == .asking) {
+                session.state = .running;
+            }
             const ws_msg = protocol.encodeActivityUpdate(self.allocator, session.id, null) catch return;
             defer self.allocator.free(ws_msg);
             self.broadcaster.broadcast(ws_msg);
@@ -241,10 +248,57 @@ pub const SessionManager = struct {
         self.broadcaster.broadcast(state_msg);
     }
 
+    const AskOption = struct { label: []const u8 = "" };
+    const AskQuestion = struct { question: []const u8 = "", options: []const AskOption = &.{} };
+    const AskPayload = struct {
+        tool_name: []const u8 = "",
+        tool_input: ?struct {
+            questions: []const AskQuestion = &.{},
+        } = null,
+    };
+
     fn handlePreToolUse(self: *SessionManager, session: *Session, raw_json: []const u8) void {
         const Payload = struct { tool_name: []const u8 = "" };
         const parsed = std.json.parseFromSlice(Payload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch return;
         defer parsed.deinit();
+
+        if (std.mem.eql(u8, parsed.value.tool_name, "AskUserQuestion")) {
+            session.state = .asking;
+
+            // Try to parse question and options from tool_input
+            var question_text: []const u8 = "";
+            var option_labels: []const []const u8 = &.{};
+            const ask_parsed = std.json.parseFromSlice(AskPayload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch null;
+            defer if (ask_parsed) |ap| ap.deinit();
+
+            if (ask_parsed) |ap| {
+                if (ap.value.tool_input) |ti| {
+                    if (ti.questions.len > 0) {
+                        const q = ti.questions[0];
+                        question_text = q.question;
+                        if (q.options.len > 0) {
+                            var labels: std.ArrayList([]const u8) = .empty;
+                            for (q.options) |opt| {
+                                labels.append(self.allocator, self.allocator.dupe(u8, opt.label) catch continue) catch continue;
+                            }
+                            option_labels = labels.toOwnedSlice(self.allocator) catch &.{};
+                        }
+                    }
+                }
+            }
+
+            session.setWaitingInput(question_text, option_labels);
+            // Override state back to asking (setWaitingInput sets waiting_input)
+            session.state = .asking;
+
+            const msg = protocol.encodePromptRequest(self.allocator, session.id, question_text, option_labels) catch return;
+            defer self.allocator.free(msg);
+            self.broadcaster.broadcast(msg);
+            return;
+        }
+
+        session.state = .running;
+
         if (session.current_activity) |act| {
             self.allocator.free(act.tool_name);
             if (act.summary.len > 0) self.allocator.free(act.summary);

@@ -70,6 +70,8 @@
   .status.waiting_input { background: var(--warn); color: #000; animation: pulse 1.5s infinite; }
   .status.stopped { background: var(--danger); color: #fff; }
   .status.starting { background: var(--accent); color: #000; }
+  .status.idle { background: var(--accent); color: #000; }
+  .status.asking { background: var(--warn); color: #000; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.5 } }
   .activity { color: var(--accent); font-size: 0.8rem; margin-top: 0.3rem; font-family: monospace; }
   .section { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }

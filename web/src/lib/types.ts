@@ -17,7 +17,7 @@ export interface ActivityInfo {
 
 export interface SessionInfo {
   id: number;
-  state: 'starting' | 'running' | 'waiting_input' | 'stopped';
+  state: 'starting' | 'running' | 'idle' | 'waiting_input' | 'asking' | 'stopped';
   command: string;
   cwd: string;
   tasks: TaskInfo[];
@@ -41,5 +41,6 @@ export interface ServerMessage {
   elapsed_ms?: number;
   summary?: string;
   options?: string[];
+  question?: string;
   success?: boolean;
 }

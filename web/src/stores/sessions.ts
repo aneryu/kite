@@ -6,6 +6,7 @@ type Listener = () => void;
 
 class SessionStore {
   sessions: SessionInfo[] = [];
+  prompts: Map<number, { summary: string; options: string[] }> = new Map();
   private listeners: Listener[] = [];
 
   subscribe(fn: Listener) {
@@ -33,7 +34,13 @@ class SessionStore {
     switch (msg.type) {
       case 'session_state_change': {
         const s = this.getSession(sid);
-        if (s && msg.state) { s.state = msg.state as SessionInfo['state']; this.notify(); }
+        if (s && msg.state) {
+          s.state = msg.state as SessionInfo['state'];
+          if (msg.state !== 'waiting_input' && msg.state !== 'asking') {
+            this.prompts.delete(sid);
+          }
+          this.notify();
+        }
         break;
       }
       case 'task_update': {
@@ -63,14 +70,18 @@ class SessionStore {
       }
       case 'prompt_request': {
         const s = this.getSession(sid);
-        if (s) { s.state = 'waiting_input'; this.notify(); }
+        if (s) {
+          s.state = msg.state === 'asking' ? 'asking' : 'waiting_input';
+          this.prompts.set(sid, { summary: msg.summary ?? '', options: msg.options ?? [] });
+          this.notify();
+        }
         break;
       }
     }
   }
 
   sorted(): SessionInfo[] {
-    const priority: Record<string, number> = { waiting_input: 0, running: 1, starting: 2, stopped: 3 };
+    const priority: Record<string, number> = { asking: 0, waiting_input: 0, running: 1, idle: 2, starting: 3, stopped: 4 };
     return [...this.sessions].sort((a, b) => (priority[a.state] ?? 9) - (priority[b.state] ?? 9));
   }
 }

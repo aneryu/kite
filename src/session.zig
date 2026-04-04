@@ -54,7 +54,9 @@ pub const RingBuffer = struct {
 pub const SessionState = enum {
     starting,
     running,
+    idle,
     waiting_input,
+    asking,
     stopped,
 };
 
