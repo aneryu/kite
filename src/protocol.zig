@@ -318,6 +318,32 @@ pub fn buildPermissionHookOutput(allocator: std.mem.Allocator, tool_input_json: 
     , .{updated_input});
 }
 
+pub fn encodeSessionsSyncJson(allocator: std.mem.Allocator, sessions_json: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"sessions_sync","sessions":{s}}}
+    , .{sessions_json});
+}
+
+pub fn encodeCreateSessionResult(allocator: std.mem.Allocator, session_id: u64) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"create_session_result","session_id":{d}}}
+    , .{session_id});
+}
+
+pub fn encodeDeleteSessionResult(allocator: std.mem.Allocator, session_id: u64, success: bool) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"delete_session_result","session_id":{d},"success":{s}}}
+    , .{ session_id, if (success) "true" else "false" });
+}
+
+pub fn encodePing() []const u8 {
+    return "{\"type\":\"ping\"}";
+}
+
+pub fn encodePong() []const u8 {
+    return "{\"type\":\"pong\"}";
+}
+
 test "encodePromptRequest" {
     const allocator = std.testing.allocator;
     const options = [_][]const u8{ "Yes", "No" };
