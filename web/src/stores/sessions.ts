@@ -19,6 +19,12 @@ class SessionStore {
   async load() {
     try {
       this.sessions = await fetchSessions();
+      // Restore prompts from API data
+      for (const s of this.sessions) {
+        if (s.prompt && (s.state === 'asking' || s.state === 'waiting_input')) {
+          this.prompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options });
+        }
+      }
       this.notify();
     } catch {}
   }

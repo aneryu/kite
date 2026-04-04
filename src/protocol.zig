@@ -148,6 +148,8 @@ pub fn encodeSessionStateChange(allocator: std.mem.Allocator, session_id: u64, s
     , .{ session_id, state_str });
 }
 
+pub const jsonEscapeAllocPublic = jsonEscapeAlloc;
+
 fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);

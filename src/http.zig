@@ -407,6 +407,25 @@ pub const Server = struct {
                 } else {
                     try json_buf.appendSlice(self.allocator, ",\"activity\":null");
                 }
+                // prompt context
+                if (s.prompt_summary.len > 0 or s.prompt_options.len > 0) {
+                    try json_buf.appendSlice(self.allocator, ",\"prompt\":{\"summary\":\"");
+                    const esc_summary = protocol.jsonEscapeAllocPublic(self.allocator, s.prompt_summary) catch "";
+                    defer if (esc_summary.len > 0) self.allocator.free(esc_summary);
+                    try json_buf.appendSlice(self.allocator, esc_summary);
+                    try json_buf.appendSlice(self.allocator, "\",\"options\":[");
+                    for (s.prompt_options, 0..) |opt, oi| {
+                        if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
+                        try json_buf.appendSlice(self.allocator, "\"");
+                        const esc_opt = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
+                        defer if (esc_opt.len > 0) self.allocator.free(esc_opt);
+                        try json_buf.appendSlice(self.allocator, esc_opt);
+                        try json_buf.appendSlice(self.allocator, "\"");
+                    }
+                    try json_buf.appendSlice(self.allocator, "]}");
+                } else {
+                    try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
+                }
                 try json_buf.appendSlice(self.allocator, "}");
             }
             try json_buf.appendSlice(self.allocator, "]");
@@ -486,6 +505,25 @@ pub const Server = struct {
                 try json_buf.appendSlice(self.allocator, act_entry);
             } else {
                 try json_buf.appendSlice(self.allocator, ",\"activity\":null");
+            }
+            // prompt context
+            if (session.prompt_context) |pc| {
+                try json_buf.appendSlice(self.allocator, ",\"prompt\":{\"summary\":\"");
+                const esc_summary = protocol.jsonEscapeAllocPublic(self.allocator, pc.summary) catch "";
+                defer if (esc_summary.len > 0) self.allocator.free(esc_summary);
+                try json_buf.appendSlice(self.allocator, esc_summary);
+                try json_buf.appendSlice(self.allocator, "\",\"options\":[");
+                for (pc.options, 0..) |opt, oi| {
+                    if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
+                    try json_buf.appendSlice(self.allocator, "\"");
+                    const esc_opt = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
+                    defer if (esc_opt.len > 0) self.allocator.free(esc_opt);
+                    try json_buf.appendSlice(self.allocator, esc_opt);
+                    try json_buf.appendSlice(self.allocator, "\"");
+                }
+                try json_buf.appendSlice(self.allocator, "]}");
+            } else {
+                try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
             }
             try json_buf.appendSlice(self.allocator, "}");
             try head.respond(json_buf.items, .{

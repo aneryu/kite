@@ -185,6 +185,8 @@ pub const SessionManager = struct {
                 .tasks = ms.session.tasks.items,
                 .subagents = ms.session.subagents.items,
                 .current_activity = ms.session.current_activity,
+                .prompt_summary = if (ms.session.prompt_context) |pc| pc.summary else "",
+                .prompt_options = if (ms.session.prompt_context) |pc| pc.options else &.{},
             });
         }
 
@@ -426,6 +428,8 @@ pub const SessionInfo = struct {
     tasks: []const @import("session.zig").TaskInfo,
     subagents: []const @import("session.zig").SubagentInfo,
     current_activity: ?@import("session.zig").ActivityInfo = null,
+    prompt_summary: []const u8 = "",
+    prompt_options: []const []const u8 = &.{},
 };
 
 const StopPayload = struct {

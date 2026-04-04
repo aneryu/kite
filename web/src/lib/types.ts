@@ -15,6 +15,11 @@ export interface ActivityInfo {
   tool_name: string;
 }
 
+export interface PromptInfo {
+  summary: string;
+  options: string[];
+}
+
 export interface SessionInfo {
   id: number;
   state: 'starting' | 'running' | 'idle' | 'waiting_input' | 'asking' | 'stopped';
@@ -23,6 +28,7 @@ export interface SessionInfo {
   tasks: TaskInfo[];
   subagents: SubagentInfo[];
   activity: ActivityInfo | null;
+  prompt: PromptInfo | null;
 }
 
 export interface ServerMessage {
