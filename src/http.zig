@@ -368,7 +368,44 @@ pub const Server = struct {
                     \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
                 , .{ s.id, state_str, s.command, s.cwd }) catch continue;
                 defer self.allocator.free(entry);
-                try json_buf.appendSlice(self.allocator, entry);
+                try json_buf.appendSlice(self.allocator, entry[0 .. entry.len - 1]); // strip trailing }
+                // tasks array
+                try json_buf.appendSlice(self.allocator, ",\"tasks\":[");
+                for (s.tasks, 0..) |task, ti| {
+                    if (ti > 0) try json_buf.appendSlice(self.allocator, ",");
+                    const t_entry = std.fmt.allocPrint(self.allocator,
+                        \\{{"id":"{s}","subject":"{s}","completed":{s}}}
+                    , .{ task.id, task.subject, if (task.completed) "true" else "false" }) catch continue;
+                    defer self.allocator.free(t_entry);
+                    try json_buf.appendSlice(self.allocator, t_entry);
+                }
+                try json_buf.appendSlice(self.allocator, "]");
+                // subagents array
+                try json_buf.appendSlice(self.allocator, ",\"subagents\":[");
+                for (s.subagents, 0..) |sa, si| {
+                    if (si > 0) try json_buf.appendSlice(self.allocator, ",");
+                    const sa_entry = std.fmt.allocPrint(self.allocator,
+                        \\{{"id":"{s}","type":"{s}","completed":{s},"elapsed_ms":{d}}}
+                    , .{ sa.id, sa.agent_type, if (sa.completed) "true" else "false", sa.elapsed_ms }) catch continue;
+                    defer self.allocator.free(sa_entry);
+                    try json_buf.appendSlice(self.allocator, sa_entry);
+                }
+                try json_buf.appendSlice(self.allocator, "]");
+                // activity
+                if (s.current_activity) |act| {
+                    const act_entry = std.fmt.allocPrint(self.allocator,
+                        \\,"activity":{{"tool_name":"{s}"}}
+                    , .{act.tool_name}) catch {
+                        try json_buf.appendSlice(self.allocator, ",\"activity\":null");
+                        try json_buf.appendSlice(self.allocator, "}");
+                        continue;
+                    };
+                    defer self.allocator.free(act_entry);
+                    try json_buf.appendSlice(self.allocator, act_entry);
+                } else {
+                    try json_buf.appendSlice(self.allocator, ",\"activity\":null");
+                }
+                try json_buf.appendSlice(self.allocator, "}");
             }
             try json_buf.appendSlice(self.allocator, "]");
             try head.respond(json_buf.items, .{
@@ -403,11 +440,51 @@ pub const Server = struct {
                 .waiting_input => "waiting_input",
                 .stopped => "stopped",
             };
-            const response = std.fmt.allocPrint(self.allocator,
+            var json_buf: std.ArrayList(u8) = .empty;
+            defer json_buf.deinit(self.allocator);
+            const header = std.fmt.allocPrint(self.allocator,
                 \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
             , .{ session.id, state_str, session.command, session.cwd }) catch return;
-            defer self.allocator.free(response);
-            try head.respond(response, .{
+            defer self.allocator.free(header);
+            try json_buf.appendSlice(self.allocator, header[0 .. header.len - 1]); // strip trailing }
+            // tasks
+            try json_buf.appendSlice(self.allocator, ",\"tasks\":[");
+            for (session.tasks.items, 0..) |task, ti| {
+                if (ti > 0) try json_buf.appendSlice(self.allocator, ",");
+                const t_entry = std.fmt.allocPrint(self.allocator,
+                    \\{{"id":"{s}","subject":"{s}","completed":{s}}}
+                , .{ task.id, task.subject, if (task.completed) "true" else "false" }) catch continue;
+                defer self.allocator.free(t_entry);
+                try json_buf.appendSlice(self.allocator, t_entry);
+            }
+            try json_buf.appendSlice(self.allocator, "]");
+            // subagents
+            try json_buf.appendSlice(self.allocator, ",\"subagents\":[");
+            for (session.subagents.items, 0..) |sa, si| {
+                if (si > 0) try json_buf.appendSlice(self.allocator, ",");
+                const sa_entry = std.fmt.allocPrint(self.allocator,
+                    \\{{"id":"{s}","type":"{s}","completed":{s},"elapsed_ms":{d}}}
+                , .{ sa.id, sa.agent_type, if (sa.completed) "true" else "false", sa.elapsed_ms }) catch continue;
+                defer self.allocator.free(sa_entry);
+                try json_buf.appendSlice(self.allocator, sa_entry);
+            }
+            try json_buf.appendSlice(self.allocator, "]");
+            // activity
+            if (session.current_activity) |act| {
+                const act_entry = std.fmt.allocPrint(self.allocator,
+                    \\,"activity":{{"tool_name":"{s}"}}
+                , .{act.tool_name}) catch {
+                    try json_buf.appendSlice(self.allocator, ",\"activity\":null}");
+                    try head.respond(json_buf.items, .{ .extra_headers = self.apiHeaders() });
+                    return;
+                };
+                defer self.allocator.free(act_entry);
+                try json_buf.appendSlice(self.allocator, act_entry);
+            } else {
+                try json_buf.appendSlice(self.allocator, ",\"activity\":null");
+            }
+            try json_buf.appendSlice(self.allocator, "}");
+            try head.respond(json_buf.items, .{
                 .extra_headers = self.apiHeaders(),
             });
         } else {

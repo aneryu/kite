@@ -182,6 +182,9 @@ pub const SessionManager = struct {
                 .state = ms.session.state,
                 .command = ms.session.command,
                 .cwd = ms.session.cwd,
+                .tasks = ms.session.tasks.items,
+                .subagents = ms.session.subagents.items,
+                .current_activity = ms.session.current_activity,
             });
         }
 
@@ -220,6 +223,9 @@ pub const SessionManager = struct {
                 if (act.summary.len > 0) self.allocator.free(act.summary);
             }
             session.current_activity = null;
+            const ws_msg = protocol.encodeActivityUpdate(self.allocator, session.id, null) catch return;
+            defer self.allocator.free(ws_msg);
+            self.broadcaster.broadcast(ws_msg);
         } else if (std.mem.eql(u8, event_name, "TaskCreated")) {
             self.handleTaskCreated(session, raw_json);
         } else if (std.mem.eql(u8, event_name, "TaskCompleted")) {
@@ -246,6 +252,9 @@ pub const SessionManager = struct {
         session.current_activity = .{
             .tool_name = self.allocator.dupe(u8, parsed.value.tool_name) catch return,
         };
+        const ws_msg = protocol.encodeActivityUpdate(self.allocator, session.id, parsed.value.tool_name) catch return;
+        defer self.allocator.free(ws_msg);
+        self.broadcaster.broadcast(ws_msg);
     }
 
     fn handleTaskCreated(self: *SessionManager, session: *Session, raw_json: []const u8) void {
@@ -258,6 +267,9 @@ pub const SessionManager = struct {
             .description = if (parsed.value.task_description.len > 0) self.allocator.dupe(u8, parsed.value.task_description) catch return else "",
         };
         session.tasks.append(self.allocator, task) catch return;
+        const ws_msg = protocol.encodeTaskUpdate(self.allocator, session.id, task.id, task.subject, false) catch return;
+        defer self.allocator.free(ws_msg);
+        self.broadcaster.broadcast(ws_msg);
     }
 
     fn handleTaskCompleted(self: *SessionManager, session: *Session, raw_json: []const u8) void {
@@ -267,6 +279,9 @@ pub const SessionManager = struct {
         for (session.tasks.items) |*task| {
             if (std.mem.eql(u8, task.id, parsed.value.task_id)) {
                 task.completed = true;
+                const ws_msg = protocol.encodeTaskUpdate(self.allocator, session.id, task.id, task.subject, true) catch return;
+                defer self.allocator.free(ws_msg);
+                self.broadcaster.broadcast(ws_msg);
                 break;
             }
         }
@@ -282,6 +297,9 @@ pub const SessionManager = struct {
             .started_at = std.time.timestamp(),
         };
         session.subagents.append(self.allocator, sa) catch return;
+        const ws_msg = protocol.encodeSubagentUpdate(self.allocator, session.id, sa.id, sa.agent_type, false, 0) catch return;
+        defer self.allocator.free(ws_msg);
+        self.broadcaster.broadcast(ws_msg);
     }
 
     fn handleSubagentStop(self: *SessionManager, session: *Session, raw_json: []const u8) void {
@@ -292,6 +310,9 @@ pub const SessionManager = struct {
             if (std.mem.eql(u8, sa.id, parsed.value.agent_id)) {
                 sa.completed = true;
                 sa.elapsed_ms = (std.time.timestamp() - sa.started_at) * 1000;
+                const ws_msg = protocol.encodeSubagentUpdate(self.allocator, session.id, sa.id, sa.agent_type, true, sa.elapsed_ms) catch return;
+                defer self.allocator.free(ws_msg);
+                self.broadcaster.broadcast(ws_msg);
                 break;
             }
         }
@@ -346,6 +367,9 @@ pub const SessionInfo = struct {
     state: @import("session.zig").SessionState,
     command: []const u8,
     cwd: []const u8,
+    tasks: []const @import("session.zig").TaskInfo,
+    subagents: []const @import("session.zig").SubagentInfo,
+    current_activity: ?@import("session.zig").ActivityInfo = null,
 };
 
 const StopPayload = struct {
