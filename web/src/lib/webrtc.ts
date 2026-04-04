@@ -113,10 +113,15 @@ export class RtcManager {
 
     this.dc.onmessage = (ev) => {
       try {
-        const msg: ServerMessage = JSON.parse(ev.data);
+        const raw = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
+        console.log('[RTC] DC recv:', raw.substring(0, 200));
+        const msg: ServerMessage = JSON.parse(raw);
         if (msg.type === 'pong') return;
+        console.log('[RTC] Dispatching to', this.handlers.length, 'handlers, type:', msg.type);
         this.handlers.forEach((h) => h(msg));
-      } catch {}
+      } catch (e) {
+        console.error('[RTC] DC message parse error:', e, 'raw:', ev.data);
+      }
     };
 
     this.dc.onclose = () => {

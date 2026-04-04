@@ -614,15 +614,22 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
 
     // Try as setup token first (exchange for session token)
     if (auth.validateSetupToken(token)) |session_token_hex| {
-        logStderr("[kite-auth] Setup token valid, sending session token", .{});
-        const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch return;
+        logStderr("[kite-auth] Setup token valid, generating auth_result", .{});
+        const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch |err| {
+            logStderr("[kite-auth] encodeAuthResult failed: {}", .{err});
+            return;
+        };
         defer allocator.free(result);
+        logStderr("[kite-auth] auth_result encoded ({d} bytes): {s}", .{ result.len, result[0..@min(result.len, 80)] });
         if (global_rtc_peer) |peer| {
+            logStderr("[kite-auth] Sending via DC (dc={d})", .{peer.dc});
             peer.send(result) catch |err| {
-                logStderr("[kite-auth] Failed to send auth_result: {}", .{err});
+                logStderr("[kite-auth] send FAILED: {}", .{err});
+                return;
             };
+            logStderr("[kite-auth] auth_result SENT successfully", .{});
         } else {
-            logStderr("[kite-auth] WARNING: no rtc_peer to send auth_result", .{});
+            logStderr("[kite-auth] WARNING: no rtc_peer!", .{});
         }
         return;
     }

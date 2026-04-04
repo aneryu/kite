@@ -24,22 +24,26 @@
 
   const signalUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
 
+  function handleAuthResult(msg: import('./lib/types').ServerMessage) {
+    if (msg.type !== 'auth_result') return;
+    console.log('[App] auth_result received, success:', msg.success);
+    connecting = false;
+    if (msg.success) {
+      if (msg.token) setStoredToken(msg.token as string);
+      authReady = true;
+      authRequired = false;
+      authError = '';
+      console.log('[App] authReady=true, connecting=false');
+    } else {
+      clearStoredToken();
+      authReady = false;
+      authRequired = true;
+      authError = 'Authentication failed.';
+    }
+  }
+
   onMount(() => {
-    const unsubscribe = rtc.onMessage((msg) => {
-      if (msg.type !== 'auth_result') return;
-      connecting = false;
-      if (msg.success) {
-        if (msg.token) setStoredToken(msg.token as string);
-        authReady = true;
-        authRequired = false;
-        authError = '';
-      } else {
-        clearStoredToken();
-        authReady = false;
-        authRequired = true;
-        authError = 'Authentication failed.';
-      }
-    });
+    const unsubscribe = rtc.onMessage(handleAuthResult);
 
     void initializeAuth();
 
