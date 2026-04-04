@@ -99,6 +99,32 @@ pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summar
     , .{ session_id, escaped_summary, opts_buf.items });
 }
 
+pub fn encodeTaskUpdate(allocator: std.mem.Allocator, session_id: u64, task_id: []const u8, subject: []const u8, completed: bool) ![]u8 {
+    const escaped_subject = try jsonEscapeAlloc(allocator, subject);
+    defer allocator.free(escaped_subject);
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"task_update","session_id":{d},"task_id":"{s}","subject":"{s}","completed":{s}}}
+    , .{ session_id, task_id, escaped_subject, if (completed) "true" else "false" });
+}
+
+pub fn encodeSubagentUpdate(allocator: std.mem.Allocator, session_id: u64, agent_id: []const u8, agent_type: []const u8, completed: bool, elapsed_ms: i64) ![]u8 {
+    return std.fmt.allocPrint(allocator,
+        \\{{"type":"subagent_update","session_id":{d},"agent_id":"{s}","agent_type":"{s}","completed":{s},"elapsed_ms":{d}}}
+    , .{ session_id, agent_id, agent_type, if (completed) "true" else "false", elapsed_ms });
+}
+
+pub fn encodeActivityUpdate(allocator: std.mem.Allocator, session_id: u64, tool_name: ?[]const u8) ![]u8 {
+    if (tool_name) |tn| {
+        return std.fmt.allocPrint(allocator,
+            \\{{"type":"activity_update","session_id":{d},"tool_name":"{s}"}}
+        , .{ session_id, tn });
+    } else {
+        return std.fmt.allocPrint(allocator,
+            \\{{"type":"activity_update","session_id":{d},"tool_name":null}}
+        , .{session_id});
+    }
+}
+
 pub fn encodeSessionStateChange(allocator: std.mem.Allocator, session_id: u64, state: @import("session.zig").SessionState) ![]u8 {
     const state_str = switch (state) {
         .starting => "starting",
