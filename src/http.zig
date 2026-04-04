@@ -4,7 +4,9 @@ const net = std.net;
 const auth_mod = @import("auth.zig");
 const protocol = @import("protocol.zig");
 const ws_mod = @import("ws.zig");
-const SessionManager = @import("session_manager.zig").SessionManager;
+const session_manager_mod = @import("session_manager.zig");
+const SessionManager = session_manager_mod.SessionManager;
+const SessionInfo = session_manager_mod.SessionInfo;
 
 fn parseSessionIdFromPath(path: []const u8) ?u64 {
     const prefix = "/api/v1/sessions/";
@@ -94,12 +96,11 @@ pub const Server = struct {
         var net_writer = stream.writer(&write_buf);
 
         var http_server = http.Server.init(net_reader.interface(), &net_writer.interface);
-        var head = http_server.receiveHead() catch return;
+        var req = http_server.receiveHead() catch return;
+        const path = req.head.target;
 
-        const path = head.head.target;
-
-        if (self.cors_enabled and head.head.method == .OPTIONS) {
-            head.respond("", .{
+        if (self.cors_enabled and req.head.method == .OPTIONS) {
+            req.respond("", .{
                 .status = .no_content,
                 .extra_headers = &cors_preflight_headers,
             }) catch {};
@@ -107,69 +108,68 @@ pub const Server = struct {
         }
 
         if (std.mem.startsWith(u8, path, "/ws")) {
-            self.handleWebSocket(&head) catch {};
+            self.handleWebSocket(&req) catch {};
             return;
         }
 
-        if (std.mem.startsWith(u8, path, "/api/v1/auth") and head.head.method == .POST) {
-            self.handleAuth(&head) catch {};
+        if (std.mem.eql(u8, path, "/api/v1/auth") and req.head.method == .POST) {
+            self.handleAuth(&req) catch {};
             return;
         }
 
-        if (std.mem.eql(u8, path, "/api/v1/hooks") and head.head.method == .POST) {
-            self.handleHttpHook(&head) catch {};
+        if (std.mem.eql(u8, path, "/api/v1/hooks") and req.head.method == .POST) {
+            self.handleHttpHook(&req) catch {};
             return;
         }
 
-        if (std.mem.eql(u8, path, "/api/v1/sessions") and head.head.method == .POST) {
-            self.handleCreateSession(&head) catch {};
+        if (std.mem.startsWith(u8, path, "/api/v1/") and !self.isAuthorized(&req)) {
+            req.respond("{\"error\":\"unauthorized\"}", .{
+                .status = .unauthorized,
+                .extra_headers = self.apiHeaders(),
+            }) catch {};
+            return;
+        }
+
+        if (std.mem.eql(u8, path, "/api/v1/sessions") and req.head.method == .POST) {
+            self.handleCreateSession(&req) catch {};
             return;
         }
 
         if (std.mem.startsWith(u8, path, "/api/v1/sessions/") and std.mem.endsWith(u8, path, "/terminal")) {
-            self.handleTerminalSnapshot(&head, path) catch {};
-            return;
-        }
-
-        if (std.mem.startsWith(u8, path, "/api/v1/sessions/") and std.mem.endsWith(u8, path, "/events")) {
-            self.handleSessionEvents(&head, path) catch {};
+            self.handleTerminalSnapshot(&req, path) catch {};
             return;
         }
 
         if (std.mem.startsWith(u8, path, "/api/v1/sessions")) {
-            self.handleSessionsApi(&head) catch {};
+            self.handleSessionsApi(&req) catch {};
             return;
         }
 
-        self.serveStaticFile(&head, path) catch {};
+        self.serveStaticFile(&req, path) catch {};
     }
 
-    fn handleWebSocket(self: *Server, head: *http.Server.Request) !void {
-        const upgrade = head.upgradeRequested();
+    fn handleWebSocket(self: *Server, req: *http.Server.Request) !void {
+        const upgrade = req.upgradeRequested();
         const ws_key = switch (upgrade) {
             .websocket => |k| k orelse return,
             else => return,
         };
-        var ws = try head.respondWebSocket(.{ .key = ws_key });
+        var ws = try req.respondWebSocket(.{ .key = ws_key });
 
         var client = ws_mod.WsClient{ .ws = ws };
         if (self.auth.disabled) client.authenticated = true;
         try self.broadcaster.addClient(&client);
         defer self.broadcaster.removeClient(&client);
 
-        // Send full state sync on connect
-        self.sendSessionsSync(&client);
+        if (client.authenticated) {
+            self.sendSessionsSync(&client);
+        }
 
         while (true) {
             const message = ws.readSmallMessage() catch break;
             const data = message.data;
 
-            self.log("WS recv: {s}", .{data});
-
-            var parsed = protocol.parseClientMessage(self.allocator, data) catch {
-                self.log("WS parse error for: {s}", .{data});
-                continue;
-            };
+            var parsed = protocol.parseClientMessage(self.allocator, data) catch continue;
             defer parsed.deinit();
             const msg = parsed.value();
 
@@ -179,14 +179,14 @@ pub const Server = struct {
                     const result = protocol.encodeAuthResult(self.allocator, client.authenticated, "") catch continue;
                     defer self.allocator.free(result);
                     client.send(result);
+                    if (client.authenticated) {
+                        self.sendSessionsSync(&client);
+                    }
                 }
                 continue;
             }
 
-            if (!client.authenticated) {
-                self.log("WS msg dropped (not authenticated): {s}", .{msg.@"type"});
-                continue;
-            }
+            if (!client.authenticated) continue;
 
             if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
                 if (msg.data) |input_data| {
@@ -196,23 +196,20 @@ pub const Server = struct {
             } else if (std.mem.eql(u8, msg.@"type", "resize")) {
                 if (msg.cols != null and msg.rows != null) {
                     const sid = msg.session_id orelse 1;
-                    self.session_manager.resizeSession(sid, msg.rows.?, msg.cols.?);
+                    _ = self.session_manager.resizeSession(sid, msg.rows.?, msg.cols.?);
                 }
             } else if (std.mem.eql(u8, msg.@"type", "prompt_response")) {
                 if (msg.text) |text| {
                     const sid = msg.session_id orelse 1;
-                    self.log("WS prompt_response: session_id={d} text={s}", .{ sid, text });
                     self.session_manager.resolvePromptResponse(sid, text);
-                } else {
-                    self.log("WS prompt_response: text is null", .{});
                 }
             }
         }
     }
 
-    fn handleAuth(self: *Server, head: *http.Server.Request) !void {
+    fn handleAuth(self: *Server, req: *http.Server.Request) !void {
         var body_buf: [2048]u8 = undefined;
-        const io_reader = head.readerExpectNone(&body_buf);
+        const io_reader = req.readerExpectNone(&body_buf);
 
         var body: [2048]u8 = undefined;
         var bufs: [1][]u8 = .{&body};
@@ -221,7 +218,7 @@ pub const Server = struct {
 
         const AuthReq = struct { setup_token: []const u8 = "" };
         const parsed = std.json.parseFromSlice(AuthReq, self.allocator, body_slice, .{ .ignore_unknown_fields = true }) catch {
-            try head.respond("{\"error\":\"invalid json\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
+            try req.respond("{\"error\":\"invalid json\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         };
         defer parsed.deinit();
@@ -230,20 +227,18 @@ pub const Server = struct {
         if (token_result) |session_token| {
             const response = std.fmt.allocPrint(self.allocator, "{{\"success\":true,\"token\":\"{s}\"}}", .{session_token}) catch return;
             defer self.allocator.free(response);
-            try head.respond(response, .{
-                .extra_headers = self.apiHeaders(),
-            });
+            try req.respond(response, .{ .extra_headers = self.apiHeaders() });
         } else {
-            try head.respond("{\"error\":\"invalid or expired token\"}", .{
+            try req.respond("{\"error\":\"invalid or expired token\"}", .{
                 .status = .unauthorized,
                 .extra_headers = self.apiHeaders(),
             });
         }
     }
 
-    fn handleCreateSession(self: *Server, head: *http.Server.Request) !void {
+    fn handleCreateSession(self: *Server, req: *http.Server.Request) !void {
         var body_buf: [2048]u8 = undefined;
-        const io_reader = head.readerExpectNone(&body_buf);
+        const io_reader = req.readerExpectNone(&body_buf);
         var body: [2048]u8 = undefined;
         var bufs: [1][]u8 = .{&body};
         const body_len = io_reader.readVec(&bufs) catch 0;
@@ -258,7 +253,7 @@ pub const Server = struct {
         const parsed = std.json.parseFromSlice(CreateReq, self.allocator, body_slice, .{
             .ignore_unknown_fields = true,
         }) catch {
-            try head.respond("{\"error\":\"invalid json\"}", .{
+            try req.respond("{\"error\":\"invalid json\"}", .{
                 .status = .bad_request,
                 .extra_headers = self.apiHeaders(),
             });
@@ -274,23 +269,18 @@ pub const Server = struct {
         }) catch |err| {
             const status: std.http.Status = if (err == error.TooManySessions) .too_many_requests else .internal_server_error;
             const msg = if (err == error.TooManySessions) "{\"error\":\"too many sessions\"}" else "{\"error\":\"failed to create session\"}";
-            try head.respond(msg, .{
-                .status = status,
-                .extra_headers = self.apiHeaders(),
-            });
+            try req.respond(msg, .{ .status = status, .extra_headers = self.apiHeaders() });
             return;
         };
 
         const response = std.fmt.allocPrint(self.allocator, "{{\"session_id\":{d}}}", .{session_id}) catch return;
         defer self.allocator.free(response);
-        try head.respond(response, .{
-            .extra_headers = self.apiHeaders(),
-        });
+        try req.respond(response, .{ .extra_headers = self.apiHeaders() });
     }
 
-    fn handleHttpHook(self: *Server, head: *http.Server.Request) !void {
+    fn handleHttpHook(self: *Server, req: *http.Server.Request) !void {
         var body_buf: [8192]u8 = undefined;
-        const io_reader = head.readerExpectNone(&body_buf);
+        const io_reader = req.readerExpectNone(&body_buf);
         var body: [8192]u8 = undefined;
         var bufs: [1][]u8 = .{&body};
         const body_len = io_reader.readVec(&bufs) catch 0;
@@ -300,12 +290,11 @@ pub const Server = struct {
             hook_event_name: []const u8 = "",
             session_id: []const u8 = "",
             tool_name: ?[]const u8 = null,
-            stop_reason: ?[]const u8 = null,
         };
         const parsed = std.json.parseFromSlice(HookPayload, self.allocator, body_slice, .{
             .ignore_unknown_fields = true,
         }) catch {
-            try head.respond("{\"error\":\"invalid json\"}", .{
+            try req.respond("{\"error\":\"invalid json\"}", .{
                 .status = .bad_request,
                 .extra_headers = self.apiHeaders(),
             });
@@ -315,7 +304,7 @@ pub const Server = struct {
 
         const event_name = parsed.value.hook_event_name;
         if (event_name.len == 0) {
-            try head.respond("{\"error\":\"missing hook_event_name\"}", .{
+            try req.respond("{\"error\":\"missing hook_event_name\"}", .{
                 .status = .bad_request,
                 .extra_headers = self.apiHeaders(),
             });
@@ -331,7 +320,6 @@ pub const Server = struct {
         const is_permission_ask = std.mem.eql(u8, event_name, "PermissionRequest") and
             std.mem.eql(u8, tool_name, "AskUserQuestion");
 
-        // For PermissionRequest/AskUserQuestion: create pending ask + extract tool_input
         if (is_permission_ask) {
             const pa = self.session_manager.createPendingAsk(session_id) catch null;
             if (pa) |pending| {
@@ -339,465 +327,212 @@ pub const Server = struct {
             }
         }
 
-        // Broadcast hook event to WebSocket clients
-        const msg = protocol.encodeHookEvent(self.allocator, event_name, tool_name, body_slice, session_id) catch null;
-        if (msg) |m| {
-            defer self.allocator.free(m);
-            self.broadcaster.broadcast(m);
-        }
-
-        // Update session state (shows prompt on frontend)
         self.session_manager.handleHookEvent(session_id, event_name, body_slice);
 
-        self.log("Hook {s}: tool={s} session_id={d}", .{ event_name, tool_name, session_id });
-
         if (is_permission_ask) {
-            // Block until user responds via WebSocket
-            self.log("Blocking PermissionRequest for AskUserQuestion (session {d})", .{session_id});
             const result = self.session_manager.waitPendingAsk(session_id);
             if (result) |r| {
                 defer self.allocator.free(r.response);
                 defer if (r.tool_input_json.len > 0) self.allocator.free(r.tool_input_json);
 
                 const hook_output = protocol.buildPermissionHookOutput(self.allocator, r.tool_input_json, r.response) catch {
-                    try head.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
+                    try req.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
                     return;
                 };
                 defer self.allocator.free(hook_output);
-                self.log("PermissionRequest response: {s}", .{hook_output});
-                try head.respond(hook_output, .{ .extra_headers = self.apiHeaders() });
+                try req.respond(hook_output, .{ .extra_headers = self.apiHeaders() });
             } else {
-                try head.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
+                try req.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
             }
         } else {
-            try head.respond("{\"ok\":true}", .{
-                .extra_headers = self.apiHeaders(),
-            });
+            try req.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
         }
     }
 
     fn sendSessionsSync(self: *Server, client: *ws_mod.WsClient) void {
         const sessions = self.session_manager.listSessions(self.allocator) catch return;
-        defer self.allocator.free(sessions);
+        defer SessionManager.freeSessionList(self.allocator, sessions);
 
         var json_buf: std.ArrayList(u8) = .empty;
         defer json_buf.deinit(self.allocator);
         json_buf.appendSlice(self.allocator, "{\"type\":\"sessions_sync\",\"sessions\":[") catch return;
         for (sessions, 0..) |s, i| {
-            if (i > 0) json_buf.appendSlice(self.allocator, ",") catch continue;
-            self.buildSessionJson(&json_buf, s) catch continue;
+            if (i > 0) json_buf.appendSlice(self.allocator, ",") catch return;
+            self.appendSessionJson(&json_buf, s) catch return;
         }
         json_buf.appendSlice(self.allocator, "]}") catch return;
         client.send(json_buf.items);
     }
 
-    fn buildSessionJson(self: *Server, json_buf: *std.ArrayList(u8), s: anytype) !void {
-        const state_str = switch (s.state) {
-            .starting => "starting",
-            .running => "running",
-            .idle => "idle",
-            .waiting_input => "waiting_input",
-            .asking => "asking",
-            .stopped => "stopped",
-        };
-        const entry = try std.fmt.allocPrint(self.allocator,
-            \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
-        , .{ s.id, state_str, s.command, s.cwd });
-        defer self.allocator.free(entry);
-        try json_buf.appendSlice(self.allocator, entry[0 .. entry.len - 1]);
+    fn handleSessionsApi(self: *Server, req: *http.Server.Request) !void {
+        const path = req.head.target;
 
-        // tasks
-        try json_buf.appendSlice(self.allocator, ",\"tasks\":[");
-        for (s.tasks, 0..) |task, ti| {
-            if (ti > 0) try json_buf.appendSlice(self.allocator, ",");
-            const t_entry = std.fmt.allocPrint(self.allocator,
-                \\{{"id":"{s}","subject":"{s}","completed":{s}}}
-            , .{ task.id, task.subject, if (task.completed) "true" else "false" }) catch continue;
-            defer self.allocator.free(t_entry);
-            try json_buf.appendSlice(self.allocator, t_entry);
-        }
-        try json_buf.appendSlice(self.allocator, "]");
-
-        // subagents
-        try json_buf.appendSlice(self.allocator, ",\"subagents\":[");
-        for (s.subagents, 0..) |sa, si| {
-            if (si > 0) try json_buf.appendSlice(self.allocator, ",");
-            const sa_entry = std.fmt.allocPrint(self.allocator,
-                \\{{"id":"{s}","type":"{s}","completed":{s},"elapsed_ms":{d}}}
-            , .{ sa.id, sa.agent_type, if (sa.completed) "true" else "false", sa.elapsed_ms }) catch continue;
-            defer self.allocator.free(sa_entry);
-            try json_buf.appendSlice(self.allocator, sa_entry);
-        }
-        try json_buf.appendSlice(self.allocator, "]");
-
-        // activity
-        if (s.current_activity) |act| {
-            const act_entry = std.fmt.allocPrint(self.allocator,
-                \\,"activity":{{"tool_name":"{s}"}}
-            , .{act.tool_name}) catch {
-                try json_buf.appendSlice(self.allocator, ",\"activity\":null");
-                try json_buf.appendSlice(self.allocator, ",\"prompt\":null}");
-                return;
-            };
-            defer self.allocator.free(act_entry);
-            try json_buf.appendSlice(self.allocator, act_entry);
-        } else {
-            try json_buf.appendSlice(self.allocator, ",\"activity\":null");
-        }
-
-        // last_message
-        const last_msg = if (@hasField(@TypeOf(s), "last_message")) s.last_message else "";
-        if (last_msg.len > 0) {
-            try json_buf.appendSlice(self.allocator, ",\"last_message\":\"");
-            const esc_lm = protocol.jsonEscapeAllocPublic(self.allocator, last_msg) catch "";
-            defer if (esc_lm.len > 0) self.allocator.free(esc_lm);
-            try json_buf.appendSlice(self.allocator, esc_lm);
-            try json_buf.appendSlice(self.allocator, "\"");
-        } else {
-            try json_buf.appendSlice(self.allocator, ",\"last_message\":null");
-        }
-
-        // prompt
-        const has_prompt = if (@hasField(@TypeOf(s), "prompt_summary"))
-            s.prompt_summary.len > 0 or s.prompt_options.len > 0 or s.prompt_questions.len > 0
-        else
-            false;
-        if (has_prompt) {
-            try json_buf.appendSlice(self.allocator, ",\"prompt\":{\"summary\":\"");
-            const esc = protocol.jsonEscapeAllocPublic(self.allocator, s.prompt_summary) catch "";
-            defer if (esc.len > 0) self.allocator.free(esc);
-            try json_buf.appendSlice(self.allocator, esc);
-            try json_buf.appendSlice(self.allocator, "\",\"options\":[");
-            for (s.prompt_options, 0..) |opt, oi| {
-                if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
-                try json_buf.appendSlice(self.allocator, "\"");
-                const eo = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
-                defer if (eo.len > 0) self.allocator.free(eo);
-                try json_buf.appendSlice(self.allocator, eo);
-                try json_buf.appendSlice(self.allocator, "\"");
-            }
-            try json_buf.appendSlice(self.allocator, "]");
-            // questions array
-            try self.serializeQuestions(json_buf, s.prompt_questions);
-            try json_buf.appendSlice(self.allocator, "}");
-        } else {
-            try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
-        }
-        try json_buf.appendSlice(self.allocator, "}");
-    }
-
-    fn serializeQuestions(self: *Server, json_buf: *std.ArrayList(u8), questions: []const @import("session.zig").PromptQuestion) !void {
-        if (questions.len > 0) {
-            try json_buf.appendSlice(self.allocator, ",\"questions\":[");
-            for (questions, 0..) |q, qi| {
-                if (qi > 0) try json_buf.appendSlice(self.allocator, ",");
-                try json_buf.appendSlice(self.allocator, "{\"question\":\"");
-                const eq = protocol.jsonEscapeAllocPublic(self.allocator, q.question) catch "";
-                defer if (eq.len > 0) self.allocator.free(eq);
-                try json_buf.appendSlice(self.allocator, eq);
-                try json_buf.appendSlice(self.allocator, "\",\"options\":[");
-                for (q.options, 0..) |opt, oi| {
-                    if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
-                    try json_buf.appendSlice(self.allocator, "\"");
-                    const eo = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
-                    defer if (eo.len > 0) self.allocator.free(eo);
-                    try json_buf.appendSlice(self.allocator, eo);
-                    try json_buf.appendSlice(self.allocator, "\"");
-                }
-                try json_buf.appendSlice(self.allocator, "]}");
-            }
-            try json_buf.appendSlice(self.allocator, "]");
-        }
-    }
-
-    fn handleSessionsApi(self: *Server, head: *http.Server.Request) !void {
-        const path = head.head.target;
-
-        // GET /api/v1/sessions — list all
         if (std.mem.eql(u8, path, "/api/v1/sessions")) {
             const sessions = self.session_manager.listSessions(self.allocator) catch return;
-            defer self.allocator.free(sessions);
+        defer SessionManager.freeSessionList(self.allocator, sessions);
 
             var json_buf: std.ArrayList(u8) = .empty;
             defer json_buf.deinit(self.allocator);
             try json_buf.appendSlice(self.allocator, "[");
             for (sessions, 0..) |s, i| {
                 if (i > 0) try json_buf.appendSlice(self.allocator, ",");
-                const state_str = switch (s.state) {
-                    .starting => "starting",
-                    .running => "running",
-                    .idle => "idle",
-                    .waiting_input => "waiting_input",
-                    .asking => "asking",
-                    .stopped => "stopped",
-                };
-                const entry = std.fmt.allocPrint(self.allocator,
-                    \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
-                , .{ s.id, state_str, s.command, s.cwd }) catch continue;
-                defer self.allocator.free(entry);
-                try json_buf.appendSlice(self.allocator, entry[0 .. entry.len - 1]); // strip trailing }
-                // tasks array
-                try json_buf.appendSlice(self.allocator, ",\"tasks\":[");
-                for (s.tasks, 0..) |task, ti| {
-                    if (ti > 0) try json_buf.appendSlice(self.allocator, ",");
-                    const t_entry = std.fmt.allocPrint(self.allocator,
-                        \\{{"id":"{s}","subject":"{s}","completed":{s}}}
-                    , .{ task.id, task.subject, if (task.completed) "true" else "false" }) catch continue;
-                    defer self.allocator.free(t_entry);
-                    try json_buf.appendSlice(self.allocator, t_entry);
-                }
-                try json_buf.appendSlice(self.allocator, "]");
-                // subagents array
-                try json_buf.appendSlice(self.allocator, ",\"subagents\":[");
-                for (s.subagents, 0..) |sa, si| {
-                    if (si > 0) try json_buf.appendSlice(self.allocator, ",");
-                    const sa_entry = std.fmt.allocPrint(self.allocator,
-                        \\{{"id":"{s}","type":"{s}","completed":{s},"elapsed_ms":{d}}}
-                    , .{ sa.id, sa.agent_type, if (sa.completed) "true" else "false", sa.elapsed_ms }) catch continue;
-                    defer self.allocator.free(sa_entry);
-                    try json_buf.appendSlice(self.allocator, sa_entry);
-                }
-                try json_buf.appendSlice(self.allocator, "]");
-                // activity
-                if (s.current_activity) |act| {
-                    const act_entry = std.fmt.allocPrint(self.allocator,
-                        \\,"activity":{{"tool_name":"{s}"}}
-                    , .{act.tool_name}) catch {
-                        try json_buf.appendSlice(self.allocator, ",\"activity\":null");
-                        try json_buf.appendSlice(self.allocator, "}");
-                        continue;
-                    };
-                    defer self.allocator.free(act_entry);
-                    try json_buf.appendSlice(self.allocator, act_entry);
-                } else {
-                    try json_buf.appendSlice(self.allocator, ",\"activity\":null");
-                }
-                // prompt context
-                if (s.prompt_summary.len > 0 or s.prompt_options.len > 0 or s.prompt_questions.len > 0) {
-                    try json_buf.appendSlice(self.allocator, ",\"prompt\":{\"summary\":\"");
-                    const esc_summary = protocol.jsonEscapeAllocPublic(self.allocator, s.prompt_summary) catch "";
-                    defer if (esc_summary.len > 0) self.allocator.free(esc_summary);
-                    try json_buf.appendSlice(self.allocator, esc_summary);
-                    try json_buf.appendSlice(self.allocator, "\",\"options\":[");
-                    for (s.prompt_options, 0..) |opt, oi| {
-                        if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
-                        try json_buf.appendSlice(self.allocator, "\"");
-                        const esc_opt = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
-                        defer if (esc_opt.len > 0) self.allocator.free(esc_opt);
-                        try json_buf.appendSlice(self.allocator, esc_opt);
-                        try json_buf.appendSlice(self.allocator, "\"");
-                    }
-                    try json_buf.appendSlice(self.allocator, "]");
-                    try self.serializeQuestions(&json_buf, s.prompt_questions);
-                    try json_buf.appendSlice(self.allocator, "}");
-                } else {
-                    try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
-                }
-                // last_message
-                if (s.last_message.len > 0) {
-                    try json_buf.appendSlice(self.allocator, ",\"last_message\":\"");
-                    const esc_lm = protocol.jsonEscapeAllocPublic(self.allocator, s.last_message) catch "";
-                    defer if (esc_lm.len > 0) self.allocator.free(esc_lm);
-                    try json_buf.appendSlice(self.allocator, esc_lm);
-                    try json_buf.appendSlice(self.allocator, "\"");
-                } else {
-                    try json_buf.appendSlice(self.allocator, ",\"last_message\":null");
-                }
-                try json_buf.appendSlice(self.allocator, "}");
+                try self.appendSessionJson(&json_buf, s);
             }
             try json_buf.appendSlice(self.allocator, "]");
-            try head.respond(json_buf.items, .{
-                .extra_headers = self.apiHeaders(),
-            });
+            try req.respond(json_buf.items, .{ .extra_headers = self.apiHeaders() });
             return;
         }
 
-        // /api/v1/sessions/:id — parse ID
         const session_id = parseSessionIdFromPath(path) orelse {
-            try head.respond("{\"error\":\"invalid session id\"}", .{
+            try req.respond("{\"error\":\"invalid session id\"}", .{
                 .status = .bad_request,
                 .extra_headers = self.apiHeaders(),
             });
             return;
         };
 
-        // DELETE /api/v1/sessions/:id
-        if (head.head.method == .DELETE) {
+        if (req.head.method == .DELETE) {
             self.session_manager.destroySession(session_id);
-            try head.respond("{\"ok\":true}", .{
-                .extra_headers = self.apiHeaders(),
-            });
+            try req.respond("{\"ok\":true}", .{ .extra_headers = self.apiHeaders() });
             return;
         }
 
-        // GET /api/v1/sessions/:id
-        if (self.session_manager.getSession(session_id)) |session| {
-            const state_str = switch (session.state) {
-                .starting => "starting",
-                .running => "running",
-                .idle => "idle",
-                .waiting_input => "waiting_input",
-                .asking => "asking",
-                .stopped => "stopped",
-            };
-            var json_buf: std.ArrayList(u8) = .empty;
-            defer json_buf.deinit(self.allocator);
-            const header = std.fmt.allocPrint(self.allocator,
-                \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
-            , .{ session.id, state_str, session.command, session.cwd }) catch return;
-            defer self.allocator.free(header);
-            try json_buf.appendSlice(self.allocator, header[0 .. header.len - 1]); // strip trailing }
-            // tasks
-            try json_buf.appendSlice(self.allocator, ",\"tasks\":[");
-            for (session.tasks.items, 0..) |task, ti| {
-                if (ti > 0) try json_buf.appendSlice(self.allocator, ",");
-                const t_entry = std.fmt.allocPrint(self.allocator,
-                    \\{{"id":"{s}","subject":"{s}","completed":{s}}}
-                , .{ task.id, task.subject, if (task.completed) "true" else "false" }) catch continue;
-                defer self.allocator.free(t_entry);
-                try json_buf.appendSlice(self.allocator, t_entry);
-            }
-            try json_buf.appendSlice(self.allocator, "]");
-            // subagents
-            try json_buf.appendSlice(self.allocator, ",\"subagents\":[");
-            for (session.subagents.items, 0..) |sa, si| {
-                if (si > 0) try json_buf.appendSlice(self.allocator, ",");
-                const sa_entry = std.fmt.allocPrint(self.allocator,
-                    \\{{"id":"{s}","type":"{s}","completed":{s},"elapsed_ms":{d}}}
-                , .{ sa.id, sa.agent_type, if (sa.completed) "true" else "false", sa.elapsed_ms }) catch continue;
-                defer self.allocator.free(sa_entry);
-                try json_buf.appendSlice(self.allocator, sa_entry);
-            }
-            try json_buf.appendSlice(self.allocator, "]");
-            // activity
-            if (session.current_activity) |act| {
-                const act_entry = std.fmt.allocPrint(self.allocator,
-                    \\,"activity":{{"tool_name":"{s}"}}
-                , .{act.tool_name}) catch {
-                    try json_buf.appendSlice(self.allocator, ",\"activity\":null}");
-                    try head.respond(json_buf.items, .{ .extra_headers = self.apiHeaders() });
-                    return;
-                };
-                defer self.allocator.free(act_entry);
-                try json_buf.appendSlice(self.allocator, act_entry);
-            } else {
-                try json_buf.appendSlice(self.allocator, ",\"activity\":null");
-            }
-            // prompt context
-            if (session.prompt_context) |pc| {
-                try json_buf.appendSlice(self.allocator, ",\"prompt\":{\"summary\":\"");
-                const esc_summary = protocol.jsonEscapeAllocPublic(self.allocator, pc.summary) catch "";
-                defer if (esc_summary.len > 0) self.allocator.free(esc_summary);
-                try json_buf.appendSlice(self.allocator, esc_summary);
-                try json_buf.appendSlice(self.allocator, "\",\"options\":[");
-                for (pc.options, 0..) |opt, oi| {
-                    if (oi > 0) try json_buf.appendSlice(self.allocator, ",");
-                    try json_buf.appendSlice(self.allocator, "\"");
-                    const esc_opt = protocol.jsonEscapeAllocPublic(self.allocator, opt) catch "";
-                    defer if (esc_opt.len > 0) self.allocator.free(esc_opt);
-                    try json_buf.appendSlice(self.allocator, esc_opt);
-                    try json_buf.appendSlice(self.allocator, "\"");
-                }
-                try json_buf.appendSlice(self.allocator, "]");
-                try self.serializeQuestions(&json_buf, pc.questions);
-                try json_buf.appendSlice(self.allocator, "}");
-            } else {
-                try json_buf.appendSlice(self.allocator, ",\"prompt\":null");
-            }
-            try json_buf.appendSlice(self.allocator, "}");
-            try head.respond(json_buf.items, .{
-                .extra_headers = self.apiHeaders(),
-            });
-        } else {
-            try head.respond("{\"error\":\"session not found\"}", .{
+        const session = self.session_manager.getSessionSnapshot(self.allocator, session_id) orelse {
+            try req.respond("{\"error\":\"session not found\"}", .{
                 .status = .not_found,
                 .extra_headers = self.apiHeaders(),
             });
-        }
-    }
-
-    fn handleSessionEvents(self: *Server, head: *http.Server.Request, path: []const u8) !void {
-        const prefix = "/api/v1/sessions/";
-        const suffix = "/events";
-        if (path.len <= prefix.len + suffix.len) {
-            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
-            return;
-        }
-        const id_str = path[prefix.len .. path.len - suffix.len];
-        const session_id = std.fmt.parseInt(u64, id_str, 10) catch {
-            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         };
+        defer SessionManager.freeSessionSnapshot(self.allocator, session);
 
-        const session = self.session_manager.getSession(session_id) orelse {
-            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = self.apiHeaders() });
-            return;
-        };
-
-        // Build JSON array of events
         var json_buf: std.ArrayList(u8) = .empty;
         defer json_buf.deinit(self.allocator);
-        try json_buf.appendSlice(self.allocator, "{\"events\":[");
-        for (session.hook_events.items, 0..) |ev, i| {
-            if (i > 0) try json_buf.appendSlice(self.allocator, ",");
-            const entry = try std.fmt.allocPrint(self.allocator,
-                \\{{"event":"{s}","tool":"{s}","ts":{d}}}
-            , .{ ev.event_name, ev.tool_name, ev.timestamp });
-            defer self.allocator.free(entry);
-            try json_buf.appendSlice(self.allocator, entry);
-        }
-        try json_buf.appendSlice(self.allocator, "]}");
-        try head.respond(json_buf.items, .{ .extra_headers = self.apiHeaders() });
+        try self.appendSessionJson(&json_buf, session);
+        try req.respond(json_buf.items, .{ .extra_headers = self.apiHeaders() });
     }
 
-    fn handleTerminalSnapshot(self: *Server, head: *http.Server.Request, path: []const u8) !void {
-        // Extract session ID from /api/v1/sessions/<id>/terminal
+    fn handleTerminalSnapshot(self: *Server, req: *http.Server.Request, path: []const u8) !void {
         const prefix = "/api/v1/sessions/";
         const suffix = "/terminal";
         if (path.len <= prefix.len + suffix.len) {
-            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
+            try req.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         }
         const id_str = path[prefix.len .. path.len - suffix.len];
         const session_id = std.fmt.parseInt(u64, id_str, 10) catch {
-            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
+            try req.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         };
 
-        const session = self.session_manager.getSession(session_id) orelse {
-            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = self.apiHeaders() });
+        const snapshot = self.session_manager.getTerminalSnapshot(self.allocator, session_id) orelse {
+            try req.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = self.apiHeaders() });
             return;
         };
+        defer self.allocator.free(snapshot);
 
-        // Get terminal buffer contents and base64 encode
-        const slice = session.terminal_buffer.slice();
-        const total_len = slice.first.len + slice.second.len;
-
-        if (total_len == 0) {
-            try head.respond("{\"data\":\"\"}", .{ .extra_headers = self.apiHeaders() });
+        if (snapshot.len == 0) {
+            try req.respond("{\"data\":\"\"}", .{ .extra_headers = self.apiHeaders() });
             return;
         }
 
-        // Combine the two parts of the ring buffer
-        const combined = try self.allocator.alloc(u8, total_len);
-        defer self.allocator.free(combined);
-        @memcpy(combined[0..slice.first.len], slice.first);
-        @memcpy(combined[slice.first.len..], slice.second);
-
-        // Base64 encode
-        const b64_len = std.base64.standard.Encoder.calcSize(total_len);
+        const b64_len = std.base64.standard.Encoder.calcSize(snapshot.len);
         const b64 = try self.allocator.alloc(u8, b64_len);
         defer self.allocator.free(b64);
-        const encoded = std.base64.standard.Encoder.encode(b64, combined);
+        const encoded = std.base64.standard.Encoder.encode(b64, snapshot);
 
         const response = try std.fmt.allocPrint(self.allocator, "{{\"data\":\"{s}\",\"session_id\":{d}}}", .{ encoded, session_id });
         defer self.allocator.free(response);
-        try head.respond(response, .{ .extra_headers = self.apiHeaders() });
+        try req.respond(response, .{ .extra_headers = self.apiHeaders() });
     }
 
-    fn serveStaticFile(self: *Server, head: *http.Server.Request, path: []const u8) !void {
+    fn appendSessionJson(self: *Server, out: *std.ArrayList(u8), s: SessionInfo) !void {
+        try out.appendSlice(self.allocator, "{");
+        try out.writer(self.allocator).print("\"id\":{d},", .{s.id});
+        try protocol.appendJsonStringField(self.allocator, out, "state", stateString(s.state));
+        try out.appendSlice(self.allocator, ",");
+        try protocol.appendJsonStringField(self.allocator, out, "command", s.command);
+        try out.appendSlice(self.allocator, ",");
+        try protocol.appendJsonStringField(self.allocator, out, "cwd", s.cwd);
+
+        try out.appendSlice(self.allocator, ",\"tasks\":[");
+        for (s.tasks, 0..) |task, i| {
+            if (i > 0) try out.appendSlice(self.allocator, ",");
+            try out.appendSlice(self.allocator, "{");
+            try protocol.appendJsonStringField(self.allocator, out, "id", task.id);
+            try out.appendSlice(self.allocator, ",");
+            try protocol.appendJsonStringField(self.allocator, out, "subject", task.subject);
+            try out.appendSlice(self.allocator, ",\"completed\":");
+            try out.appendSlice(self.allocator, if (task.completed) "true" else "false");
+            try out.appendSlice(self.allocator, "}");
+        }
+        try out.appendSlice(self.allocator, "]");
+
+        try out.appendSlice(self.allocator, ",\"subagents\":[");
+        for (s.subagents, 0..) |sa, i| {
+            if (i > 0) try out.appendSlice(self.allocator, ",");
+            try out.appendSlice(self.allocator, "{");
+            try protocol.appendJsonStringField(self.allocator, out, "id", sa.id);
+            try out.appendSlice(self.allocator, ",");
+            try protocol.appendJsonStringField(self.allocator, out, "type", sa.agent_type);
+            try out.appendSlice(self.allocator, ",\"completed\":");
+            try out.appendSlice(self.allocator, if (sa.completed) "true" else "false");
+            try out.appendSlice(self.allocator, ",\"elapsed_ms\":");
+            try out.writer(self.allocator).print("{d}", .{sa.elapsed_ms});
+            try out.appendSlice(self.allocator, "}");
+        }
+        try out.appendSlice(self.allocator, "]");
+
+        if (s.current_activity) |act| {
+            try out.appendSlice(self.allocator, ",\"activity\":{");
+            try protocol.appendJsonStringField(self.allocator, out, "tool_name", act.tool_name);
+            try out.appendSlice(self.allocator, "}");
+        } else {
+            try out.appendSlice(self.allocator, ",\"activity\":null");
+        }
+
+        if (s.last_message.len > 0) {
+            try out.appendSlice(self.allocator, ",");
+            try protocol.appendJsonStringField(self.allocator, out, "last_message", s.last_message);
+        } else {
+            try out.appendSlice(self.allocator, ",\"last_message\":null");
+        }
+
+        if (s.prompt_summary.len > 0 or s.prompt_options.len > 0 or s.prompt_questions.len > 0) {
+            try out.appendSlice(self.allocator, ",\"prompt\":{");
+            try protocol.appendJsonStringField(self.allocator, out, "summary", s.prompt_summary);
+            try out.appendSlice(self.allocator, ",\"options\":[");
+            for (s.prompt_options, 0..) |opt, i| {
+                if (i > 0) try out.appendSlice(self.allocator, ",");
+                try protocol.appendJsonStringValue(self.allocator, out, opt);
+            }
+            try out.appendSlice(self.allocator, "]");
+            if (s.prompt_questions.len > 0) {
+                try out.appendSlice(self.allocator, ",\"questions\":[");
+                for (s.prompt_questions, 0..) |q, qi| {
+                    if (qi > 0) try out.appendSlice(self.allocator, ",");
+                    try out.appendSlice(self.allocator, "{");
+                    try protocol.appendJsonStringField(self.allocator, out, "question", q.question);
+                    try out.appendSlice(self.allocator, ",\"options\":[");
+                    for (q.options, 0..) |opt, oi| {
+                        if (oi > 0) try out.appendSlice(self.allocator, ",");
+                        try protocol.appendJsonStringValue(self.allocator, out, opt);
+                    }
+                    try out.appendSlice(self.allocator, "]}");
+                }
+                try out.appendSlice(self.allocator, "]");
+            }
+            try out.appendSlice(self.allocator, "}");
+        } else {
+            try out.appendSlice(self.allocator, ",\"prompt\":null");
+        }
+
+        try out.appendSlice(self.allocator, "}");
+    }
+
+    fn serveStaticFile(self: *Server, req: *http.Server.Request, path: []const u8) !void {
         const dir = self.static_dir orelse {
-            try head.respond("{\"error\":\"not found\"}", .{
+            try req.respond("{\"error\":\"not found\"}", .{
                 .status = .not_found,
                 .extra_headers = self.apiHeaders(),
             });
@@ -808,29 +543,28 @@ pub const Server = struct {
 
         var path_buf: [1024]u8 = undefined;
         const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, serve_path }) catch {
-            try head.respond("Not Found", .{ .status = .not_found });
+            try req.respond("Not Found", .{ .status = .not_found });
             return;
         };
 
         const file = std.fs.openFileAbsolute(full_path, .{}) catch {
-            // SPA fallback: serve index.html for unknown paths
             var index_buf: [1024]u8 = undefined;
             const index_path = std.fmt.bufPrint(&index_buf, "{s}/index.html", .{dir}) catch {
-                try head.respond("Not Found", .{ .status = .not_found });
+                try req.respond("Not Found", .{ .status = .not_found });
                 return;
             };
             const index_file = std.fs.openFileAbsolute(index_path, .{}) catch {
-                try head.respond("Not Found", .{ .status = .not_found });
+                try req.respond("Not Found", .{ .status = .not_found });
                 return;
             };
             defer index_file.close();
 
             var buf: [65536]u8 = undefined;
             const n = index_file.readAll(&buf) catch {
-                try head.respond("Read Error", .{ .status = .internal_server_error });
+                try req.respond("Read Error", .{ .status = .internal_server_error });
                 return;
             };
-            try head.respond(buf[0..n], .{
+            try req.respond(buf[0..n], .{
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "text/html; charset=utf-8" }},
             });
             return;
@@ -839,7 +573,7 @@ pub const Server = struct {
 
         var buf: [65536]u8 = undefined;
         const n = file.readAll(&buf) catch {
-            try head.respond("Read Error", .{ .status = .internal_server_error });
+            try req.respond("Read Error", .{ .status = .internal_server_error });
             return;
         };
 
@@ -860,12 +594,40 @@ pub const Server = struct {
         else
             "application/octet-stream";
 
-        try head.respond(buf[0..n], .{
+        try req.respond(buf[0..n], .{
             .extra_headers = &.{.{ .name = "Content-Type", .value = content_type }},
         });
+    }
+
+    fn isAuthorized(self: *const Server, req: *const http.Server.Request) bool {
+        if (self.auth.disabled) return true;
+        const token = self.extractBearerToken(req) orelse return false;
+        return self.auth.validateSessionToken(token);
+    }
+
+    fn extractBearerToken(_: *const Server, req: *const http.Server.Request) ?[]const u8 {
+        var it = req.iterateHeaders();
+        while (it.next()) |header| {
+            if (!std.ascii.eqlIgnoreCase(header.name, "authorization")) continue;
+            const prefix = "Bearer ";
+            if (!std.mem.startsWith(u8, header.value, prefix)) return null;
+            return std.mem.trim(u8, header.value[prefix.len..], " ");
+        }
+        return null;
     }
 
     pub fn stop(self: *Server) void {
         self.running.store(false, .release);
     }
 };
+
+fn stateString(state: @import("session.zig").SessionState) []const u8 {
+    return switch (state) {
+        .running => "running",
+        .idle => "idle",
+        .waiting_input => "waiting_input",
+        .asking => "asking",
+        .waiting_permission => "waiting_permission",
+        .stopped => "stopped",
+    };
+}
