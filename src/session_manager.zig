@@ -268,14 +268,16 @@ pub const SessionManager = struct {
             // Try to parse question and options from tool_input
             var question_text: []const u8 = "";
             var option_labels: []const []const u8 = &.{};
-            const ask_parsed = std.json.parseFromSlice(AskPayload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch null;
-            defer if (ask_parsed) |ap| ap.deinit();
+            const ask_parsed = std.json.parseFromSlice(AskPayload, self.allocator, raw_json, .{
+                .ignore_unknown_fields = true,
+                .allocate = .alloc_always,
+            }) catch null;
 
             if (ask_parsed) |ap| {
                 if (ap.value.tool_input) |ti| {
                     if (ti.questions.len > 0) {
                         const q = ti.questions[0];
-                        question_text = q.question;
+                        question_text = self.allocator.dupe(u8, q.question) catch "";
                         if (q.options.len > 0) {
                             var labels: std.ArrayList([]const u8) = .empty;
                             for (q.options) |opt| {
@@ -285,10 +287,10 @@ pub const SessionManager = struct {
                         }
                     }
                 }
+                ap.deinit();
             }
 
             session.setWaitingInput(question_text, option_labels);
-            // Override state back to asking (setWaitingInput sets waiting_input)
             session.state = .asking;
 
             const msg = protocol.encodePromptRequest(self.allocator, session.id, question_text, option_labels, session.state) catch return;

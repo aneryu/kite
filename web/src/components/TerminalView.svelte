@@ -25,9 +25,13 @@
     });
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-    const unicode11 = new Unicode11Addon();
-    terminal.loadAddon(unicode11);
-    terminal.unicode.activeVersion = '11';
+    try {
+      const unicode11 = new Unicode11Addon();
+      terminal.loadAddon(unicode11);
+      terminal.unicode.activeVersion = '11';
+    } catch (e) {
+      console.warn('Unicode11 addon failed to load:', e);
+    }
     terminal.open(containerEl);
     fitAddon.fit();
     ws.sendResize(terminal.cols, terminal.rows, sessionId);
