@@ -15,6 +15,21 @@ fn parseSessionIdFromPath(path: []const u8) ?u64 {
     return std.fmt.parseInt(u64, id_str, 10) catch null;
 }
 
+const cors_preflight_headers: [3]http.Header = .{
+    .{ .name = "Access-Control-Allow-Origin", .value = "*" },
+    .{ .name = "Access-Control-Allow-Methods", .value = "GET, POST, DELETE, OPTIONS" },
+    .{ .name = "Access-Control-Allow-Headers", .value = "Content-Type, Authorization" },
+};
+
+const json_header: [1]http.Header = .{
+    .{ .name = "Content-Type", .value = "application/json" },
+};
+
+const json_cors_headers: [2]http.Header = .{
+    .{ .name = "Content-Type", .value = "application/json" },
+    .{ .name = "Access-Control-Allow-Origin", .value = "*" },
+};
+
 pub const Server = struct {
     allocator: std.mem.Allocator,
     address: net.Address,
@@ -23,6 +38,12 @@ pub const Server = struct {
     session_manager: *SessionManager,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     static_dir: ?[]const u8 = null,
+    cors_enabled: bool = false,
+
+    fn apiHeaders(self: *const Server) []const http.Header {
+        if (self.cors_enabled) return &json_cors_headers;
+        return &json_header;
+    }
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -70,6 +91,14 @@ pub const Server = struct {
         var head = http_server.receiveHead() catch return;
 
         const path = head.head.target;
+
+        if (self.cors_enabled and head.head.method == .OPTIONS) {
+            try head.respond("", .{
+                .status = .no_content,
+                .extra_headers = &cors_preflight_headers,
+            });
+            return;
+        }
 
         if (std.mem.startsWith(u8, path, "/ws")) {
             self.handleWebSocket(&head) catch {};
@@ -191,7 +220,7 @@ pub const Server = struct {
 
         const AuthReq = struct { setup_token: []const u8 = "" };
         const parsed = std.json.parseFromSlice(AuthReq, self.allocator, body_slice, .{ .ignore_unknown_fields = true }) catch {
-            try head.respond("{\"error\":\"invalid json\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"error\":\"invalid json\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         };
         defer parsed.deinit();
@@ -201,12 +230,12 @@ pub const Server = struct {
             const response = std.fmt.allocPrint(self.allocator, "{{\"success\":true,\"token\":\"{s}\"}}", .{session_token}) catch return;
             defer self.allocator.free(response);
             try head.respond(response, .{
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
         } else {
             try head.respond("{\"error\":\"invalid or expired token\"}", .{
                 .status = .unauthorized,
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
         }
     }
@@ -230,7 +259,7 @@ pub const Server = struct {
         }) catch {
             try head.respond("{\"error\":\"invalid json\"}", .{
                 .status = .bad_request,
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
             return;
         };
@@ -246,7 +275,7 @@ pub const Server = struct {
             const msg = if (err == error.TooManySessions) "{\"error\":\"too many sessions\"}" else "{\"error\":\"failed to create session\"}";
             try head.respond(msg, .{
                 .status = status,
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
             return;
         };
@@ -254,7 +283,7 @@ pub const Server = struct {
         const response = std.fmt.allocPrint(self.allocator, "{{\"session_id\":{d}}}", .{session_id}) catch return;
         defer self.allocator.free(response);
         try head.respond(response, .{
-            .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            .extra_headers = self.apiHeaders(),
         });
     }
 
@@ -285,7 +314,7 @@ pub const Server = struct {
             }
             try json_buf.appendSlice(self.allocator, "]");
             try head.respond(json_buf.items, .{
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
             return;
         }
@@ -294,7 +323,7 @@ pub const Server = struct {
         const session_id = parseSessionIdFromPath(path) orelse {
             try head.respond("{\"error\":\"invalid session id\"}", .{
                 .status = .bad_request,
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
             return;
         };
@@ -303,7 +332,7 @@ pub const Server = struct {
         if (head.head.method == .DELETE) {
             self.session_manager.destroySession(session_id);
             try head.respond("{\"ok\":true}", .{
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
             return;
         }
@@ -321,12 +350,12 @@ pub const Server = struct {
             , .{ session.id, state_str, session.command, session.cwd }) catch return;
             defer self.allocator.free(response);
             try head.respond(response, .{
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
         } else {
             try head.respond("{\"error\":\"session not found\"}", .{
                 .status = .not_found,
-                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+                .extra_headers = self.apiHeaders(),
             });
         }
     }
@@ -335,17 +364,17 @@ pub const Server = struct {
         const prefix = "/api/v1/sessions/";
         const suffix = "/events";
         if (path.len <= prefix.len + suffix.len) {
-            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         }
         const id_str = path[prefix.len .. path.len - suffix.len];
         const session_id = std.fmt.parseInt(u64, id_str, 10) catch {
-            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         };
 
         const session = self.session_manager.getSession(session_id) orelse {
-            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = self.apiHeaders() });
             return;
         };
 
@@ -362,7 +391,7 @@ pub const Server = struct {
             try json_buf.appendSlice(self.allocator, entry);
         }
         try json_buf.appendSlice(self.allocator, "]}");
-        try head.respond(json_buf.items, .{ .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+        try head.respond(json_buf.items, .{ .extra_headers = self.apiHeaders() });
     }
 
     fn handleTerminalSnapshot(self: *Server, head: *http.Server.Request, path: []const u8) !void {
@@ -370,17 +399,17 @@ pub const Server = struct {
         const prefix = "/api/v1/sessions/";
         const suffix = "/terminal";
         if (path.len <= prefix.len + suffix.len) {
-            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         }
         const id_str = path[prefix.len .. path.len - suffix.len];
         const session_id = std.fmt.parseInt(u64, id_str, 10) catch {
-            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = self.apiHeaders() });
             return;
         };
 
         const session = self.session_manager.getSession(session_id) orelse {
-            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = self.apiHeaders() });
             return;
         };
 
@@ -389,7 +418,7 @@ pub const Server = struct {
         const total_len = slice.first.len + slice.second.len;
 
         if (total_len == 0) {
-            try head.respond("{\"data\":\"\"}", .{ .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            try head.respond("{\"data\":\"\"}", .{ .extra_headers = self.apiHeaders() });
             return;
         }
 
@@ -407,7 +436,7 @@ pub const Server = struct {
 
         const response = try std.fmt.allocPrint(self.allocator, "{{\"data\":\"{s}\",\"session_id\":{d}}}", .{ encoded, session_id });
         defer self.allocator.free(response);
-        try head.respond(response, .{ .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+        try head.respond(response, .{ .extra_headers = self.apiHeaders() });
     }
 
     fn serveStaticFile(self: *Server, head: *http.Server.Request, path: []const u8) !void {

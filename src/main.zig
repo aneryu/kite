@@ -137,6 +137,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         &session_manager,
     );
     http_server.static_dir = config.static_dir;
+    http_server.cors_enabled = config.no_auth;
     const server_thread = try std.Thread.spawn(.{}, HttpServer.run, .{&http_server});
     _ = server_thread;
 
