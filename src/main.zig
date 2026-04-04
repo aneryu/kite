@@ -15,6 +15,7 @@ const Config = struct {
     port: u16 = 7890,
     bind: []const u8 = "0.0.0.0",
     command: []const u8 = "claude",
+    attach_id: ?u64 = null,
 };
 
 const Command = enum {
@@ -153,6 +154,9 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
         if (std.mem.eql(u8, args[i], "--cmd") and i + 1 < args.len) {
             config.command = args[i + 1];
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--attach") and i + 1 < args.len) {
+            config.attach_id = std.fmt.parseInt(u64, args[i + 1], 10) catch null;
+            i += 1;
         } else if (std.mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
             config.port = std.fmt.parseInt(u16, args[i + 1], 10) catch 7890;
             i += 1;
@@ -166,57 +170,64 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     // Step 1: Create session via HTTP API (include terminal size)
     const stdin_fd = posix.STDIN_FILENO;
-    var term_rows: u16 = 24;
-    var term_cols: u16 = 80;
-    if (terminal.getWindowSize(stdin_fd)) |ws| {
-        term_rows = ws.rows;
-        term_cols = ws.cols;
-    }
-
-    const address = try std.net.Address.parseIp("127.0.0.1", config.port);
-    const http_stream = std.net.tcpConnectToAddress(address) catch {
-        try stdout.print("Cannot connect to kite daemon. Is it running? (kite start)\n", .{});
-        try stdout.flush();
-        return;
-    };
-
-    const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",\"rows\":{d},\"cols\":{d}}}", .{ config.command, term_rows, term_cols });
-    defer allocator.free(body);
-
-    const request = try std.fmt.allocPrint(allocator,
-        "POST /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
-        .{ config.port, body.len, body },
-    );
-    defer allocator.free(request);
-
-    http_stream.writeAll(request) catch {
-        http_stream.close();
-        try stdout.print("Failed to send request to daemon.\n", .{});
-        try stdout.flush();
-        return;
-    };
-
-    // Read HTTP response to get session_id
-    var response_buf: [4096]u8 = undefined;
-    var total: usize = 0;
-    while (total < response_buf.len) {
-        const n = http_stream.read(response_buf[total..]) catch break;
-        if (n == 0) break;
-        total += n;
-    }
-    http_stream.close();
 
     var session_id: u64 = 1;
-    if (total > 0) {
-        const response = response_buf[0..total];
-        if (std.mem.indexOf(u8, response, "\r\n\r\n")) |body_start| {
-            const resp_body = response[body_start + 4 ..];
-            const parsed = std.json.parseFromSlice(struct { session_id: u64 = 0 }, allocator, resp_body, .{
-                .ignore_unknown_fields = true,
-            }) catch null;
-            if (parsed) |p| {
-                session_id = p.value.session_id;
-                p.deinit();
+
+    if (config.attach_id) |aid| {
+        // Attach to existing session, skip HTTP creation
+        session_id = aid;
+    } else {
+        var term_rows: u16 = 24;
+        var term_cols: u16 = 80;
+        if (terminal.getWindowSize(stdin_fd)) |ws| {
+            term_rows = ws.rows;
+            term_cols = ws.cols;
+        }
+
+        const address = try std.net.Address.parseIp("127.0.0.1", config.port);
+        const http_stream = std.net.tcpConnectToAddress(address) catch {
+            try stdout.print("Cannot connect to kite daemon. Is it running? (kite start)\n", .{});
+            try stdout.flush();
+            return;
+        };
+
+        const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",\"rows\":{d},\"cols\":{d}}}", .{ config.command, term_rows, term_cols });
+        defer allocator.free(body);
+
+        const request = try std.fmt.allocPrint(allocator,
+            "POST /api/sessions HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
+            .{ config.port, body.len, body },
+        );
+        defer allocator.free(request);
+
+        http_stream.writeAll(request) catch {
+            http_stream.close();
+            try stdout.print("Failed to send request to daemon.\n", .{});
+            try stdout.flush();
+            return;
+        };
+
+        // Read HTTP response to get session_id
+        var response_buf: [4096]u8 = undefined;
+        var total: usize = 0;
+        while (total < response_buf.len) {
+            const n = http_stream.read(response_buf[total..]) catch break;
+            if (n == 0) break;
+            total += n;
+        }
+        http_stream.close();
+
+        if (total > 0) {
+            const response = response_buf[0..total];
+            if (std.mem.indexOf(u8, response, "\r\n\r\n")) |body_start| {
+                const resp_body = response[body_start + 4 ..];
+                const parsed = std.json.parseFromSlice(struct { session_id: u64 = 0 }, allocator, resp_body, .{
+                    .ignore_unknown_fields = true,
+                }) catch null;
+                if (parsed) |p| {
+                    session_id = p.value.session_id;
+                    p.deinit();
+                }
             }
         }
     }
@@ -586,8 +597,9 @@ fn printUsage() void {
         \\  --bind <ADDR>   Bind address (default: 0.0.0.0)
         \\
         \\Options for 'run':
-        \\  --cmd <CMD>     Command to run (default: claude)
-        \\  --port <PORT>   Daemon port (default: 7890)
+        \\  --cmd <CMD>       Command to run (default: claude)
+        \\  --attach <ID>     Attach to existing session instead of creating new one
+        \\  --port <PORT>     Daemon port (default: 7890)
         \\
     ) catch {};
 }
