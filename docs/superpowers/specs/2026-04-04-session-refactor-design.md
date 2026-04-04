@@ -272,7 +272,19 @@ Hook JSON arrives (HTTP or IPC)
     → Broadcast messages to WebSocket clients
 ```
 
-## 7. Testing Strategy
+## 7. Existing Bugs to Fix During Refactor
+
+Two bugs identified in current code (via Codex review) that should be fixed as part of this refactor:
+
+### P1: PendingAsk use-after-free on shutdown
+
+`SessionManager.deinit()` (line 101-110) signals the condition variable and immediately destroys the `PendingAsk`, but the waiter thread in `waitPendingAsk()` may still be reading `pa.response` / `pa.tool_input_json`. Fix: let the waiter thread own destruction — `deinit` only signals, does not destroy.
+
+### P2: AskUserQuestion response sets wrong state
+
+`resolvePromptResponse()` (line 636-639) sets `next_state = .idle` after answering an AskUserQuestion. But the hook is still blocked in `waitPendingAsk()` — Claude hasn't received the answer yet, so the session is still working. Fix: after answering asking, transition to `.running` (not `.idle`). The subsequent PostToolUse or Stop event will set the correct final state.
+
+## 8. Testing Strategy
 
 Session.applyEvent is pure state machine logic — test without PTY, broadcaster, or threads:
 
