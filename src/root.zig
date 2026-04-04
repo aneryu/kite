@@ -9,6 +9,7 @@ pub const hooks = @import("hooks.zig");
 pub const protocol = @import("protocol.zig");
 pub const daemon = @import("daemon.zig");
 pub const prompt_parser = @import("prompt_parser.zig");
+pub const SessionManager = @import("session_manager.zig").SessionManager;
 
 test {
     @import("std").testing.refAllDecls(@This());
