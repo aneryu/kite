@@ -18,6 +18,8 @@ pub const SessionManager = struct {
         pty: Pty,
         relay_thread: ?std.Thread = null,
         running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+        /// File descriptor for locally attached terminal (-1 = none)
+        local_fd: std.atomic.Value(i32) = std.atomic.Value(i32).init(-1),
     };
 
     pub const CreateOptions = struct {
@@ -126,6 +128,29 @@ pub const SessionManager = struct {
         ms.pty.setWindowSize(rows, cols);
     }
 
+    /// Attach a local terminal fd to a session. PTY output will be written to this fd.
+    pub fn attachLocal(self: *SessionManager, id: u64, fd: posix.fd_t) bool {
+        self.mutex.lock();
+        const ms = self.sessions.get(id) orelse {
+            self.mutex.unlock();
+            return false;
+        };
+        self.mutex.unlock();
+        ms.local_fd.store(@intCast(fd), .release);
+        return true;
+    }
+
+    /// Detach the local terminal from a session.
+    pub fn detachLocal(self: *SessionManager, id: u64) void {
+        self.mutex.lock();
+        const ms = self.sessions.get(id) orelse {
+            self.mutex.unlock();
+            return;
+        };
+        self.mutex.unlock();
+        ms.local_fd.store(-1, .release);
+    }
+
     pub fn listSessions(self: *SessionManager, allocator: std.mem.Allocator) ![]SessionInfo {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -200,6 +225,13 @@ pub const SessionManager = struct {
 
                 ms.session.appendTerminalOutput(data);
 
+                // Write to locally attached terminal
+                const lfd = ms.local_fd.load(.acquire);
+                if (lfd >= 0) {
+                    _ = posix.write(@intCast(lfd), data) catch {};
+                }
+
+                // Broadcast to WebSocket clients
                 const msg = protocol.encodeTerminalOutput(self.allocator, data) catch continue;
                 defer self.allocator.free(msg);
                 self.broadcaster.broadcast(msg);

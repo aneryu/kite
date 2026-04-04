@@ -139,6 +139,12 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     http_server.stop();
 }
 
+var sigwinch_received: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
+fn handleSigwinch(_: c_int) callconv(.c) void {
+    sigwinch_received.store(true, .release);
+}
+
 fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var config = Config{};
 
@@ -158,13 +164,13 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var stdout_writer = stdout_file.writer(&stdout_buf);
     const stdout = &stdout_writer.interface;
 
+    // Step 1: Create session via HTTP API
     const address = try std.net.Address.parseIp("127.0.0.1", config.port);
-    const stream = std.net.tcpConnectToAddress(address) catch {
+    const http_stream = std.net.tcpConnectToAddress(address) catch {
         try stdout.print("Cannot connect to kite daemon. Is it running? (kite start)\n", .{});
         try stdout.flush();
         return;
     };
-    defer stream.close();
 
     const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\"}}", .{config.command});
     defer allocator.free(body);
@@ -175,30 +181,142 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     );
     defer allocator.free(request);
 
-    stream.writeAll(request) catch {
+    http_stream.writeAll(request) catch {
+        http_stream.close();
         try stdout.print("Failed to send request to daemon.\n", .{});
         try stdout.flush();
         return;
     };
 
+    // Read HTTP response to get session_id
     var response_buf: [4096]u8 = undefined;
     var total: usize = 0;
     while (total < response_buf.len) {
-        const n = stream.read(response_buf[total..]) catch break;
+        const n = http_stream.read(response_buf[total..]) catch break;
         if (n == 0) break;
         total += n;
     }
+    http_stream.close();
 
+    var session_id: u64 = 1;
     if (total > 0) {
         const response = response_buf[0..total];
         if (std.mem.indexOf(u8, response, "\r\n\r\n")) |body_start| {
-            try stdout.print("  {s}\n", .{response[body_start + 4 ..]});
-        } else {
-            try stdout.print("  Session created.\n", .{});
+            const resp_body = response[body_start + 4 ..];
+            const parsed = std.json.parseFromSlice(struct { session_id: u64 = 0 }, allocator, resp_body, .{
+                .ignore_unknown_fields = true,
+            }) catch null;
+            if (parsed) |p| {
+                session_id = p.value.session_id;
+                p.deinit();
+            }
         }
-    } else {
-        try stdout.print("  Session created.\n", .{});
     }
+
+    // Step 2: Attach to session via IPC Unix socket
+    const ipc_stream = std.net.connectUnixSocket(hooks.IPC_SOCKET_PATH) catch {
+        try stdout.print("Cannot connect to daemon IPC socket.\n", .{});
+        try stdout.flush();
+        return;
+    };
+    defer ipc_stream.close();
+    const ipc_fd = ipc_stream.handle;
+
+    // Send attach command
+    const attach_cmd = try std.fmt.allocPrint(allocator, "attach\n{d}\n", .{session_id});
+    defer allocator.free(attach_cmd);
+    ipc_stream.writeAll(attach_cmd) catch {
+        try stdout.print("Failed to attach to session.\n", .{});
+        try stdout.flush();
+        return;
+    };
+
+    // Wait for "ok" response
+    var ack_buf: [16]u8 = undefined;
+    const ack_n = ipc_stream.read(&ack_buf) catch 0;
+    if (ack_n < 2 or !std.mem.startsWith(u8, ack_buf[0..ack_n], "ok")) {
+        try stdout.print("Failed to attach to session.\n", .{});
+        try stdout.flush();
+        return;
+    }
+
+    // Step 3: Enter raw terminal mode and relay I/O
+    const stdin_fd = posix.STDIN_FILENO;
+    const stdout_fd = posix.STDOUT_FILENO;
+    const is_tty = posix.isatty(stdin_fd);
+
+    if (is_tty) {
+        // Sync terminal size to PTY via IPC
+        if (terminal.getWindowSize(stdin_fd)) |ws| {
+            const resize_cmd = std.fmt.allocPrint(allocator, "resize\n{d}\n{d}\n", .{ ws.rows, ws.cols }) catch null;
+            if (resize_cmd) |cmd| {
+                defer allocator.free(cmd);
+                ipc_stream.writeAll(cmd) catch {};
+            }
+        }
+
+        // Install SIGWINCH handler
+        const sa = posix.Sigaction{
+            .handler = .{ .handler = &handleSigwinch },
+            .mask = posix.sigemptyset(),
+            .flags = 0,
+        };
+        posix.sigaction(posix.SIG.WINCH, &sa, null);
+
+        terminal.enableRawMode(stdin_fd) catch {};
+    }
+    defer if (is_tty) terminal.restoreMode(stdin_fd);
+
+    // Main relay loop: poll IPC socket + stdin
+    const nfds: usize = if (is_tty) 2 else 1;
+    var fds = [2]posix.pollfd{
+        .{ .fd = ipc_fd, .events = posix.POLL.IN, .revents = 0 },
+        .{ .fd = stdin_fd, .events = posix.POLL.IN, .revents = 0 },
+    };
+
+    var stdin_buf: [4096]u8 = undefined;
+    var ipc_buf: [4096]u8 = undefined;
+
+    while (true) {
+        if (is_tty and sigwinch_received.swap(false, .acquire)) {
+            if (terminal.getWindowSize(stdin_fd)) |ws| {
+                const resize_cmd = std.fmt.allocPrint(allocator, "resize\n{d}\n{d}\n", .{ ws.rows, ws.cols }) catch null;
+                if (resize_cmd) |cmd| {
+                    defer allocator.free(cmd);
+                    ipc_stream.writeAll(cmd) catch {};
+                }
+            }
+        }
+
+        const ready = posix.poll(fds[0..nfds], 100) catch break;
+        if (ready == 0) continue;
+
+        // IPC socket → stdout (PTY output from daemon)
+        if (fds[0].revents & posix.POLL.IN != 0) {
+            const n = posix.read(ipc_fd, &ipc_buf) catch break;
+            if (n == 0) break; // daemon closed connection / session ended
+            _ = posix.write(stdout_fd, ipc_buf[0..n]) catch {};
+        }
+        if (fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) break;
+
+        // stdin → IPC socket (keyboard input to daemon → PTY)
+        if (is_tty) {
+            if (fds[1].revents & posix.POLL.IN != 0) {
+                const n = posix.read(stdin_fd, &stdin_buf) catch break;
+                if (n > 0) {
+                    ipc_stream.writeAll(stdin_buf[0..n]) catch break;
+                }
+            }
+        }
+
+        fds[0].revents = 0;
+        fds[1].revents = 0;
+    }
+
+    // Restore terminal before printing
+    if (is_tty) terminal.restoreMode(stdin_fd);
+
+    try stdout.print("\n  Session ended.\n", .{});
     try stdout.flush();
 }
 
@@ -214,29 +332,75 @@ fn runIpcListener(allocator: std.mem.Allocator, broadcaster: *WsBroadcaster, ses
 
     while (true) {
         const conn = posix.accept(sock, null, null, posix.SOCK.CLOEXEC) catch continue;
-        handleIpcConnection(allocator, conn, broadcaster, session_manager);
-        posix.close(conn);
+        // handleIpcConnection returns true if it's a long-lived attach connection
+        // (already handled, don't close). Returns false for normal hook events.
+        const is_attach = handleIpcConnection(allocator, conn, broadcaster, session_manager);
+        if (!is_attach) {
+            posix.close(conn);
+        }
     }
 }
 
-fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcaster: *WsBroadcaster, session_manager: *SessionManager) void {
+/// Returns true if this is an attach connection (long-lived, caller should NOT close).
+fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcaster: *WsBroadcaster, session_manager: *SessionManager) bool {
     var buf: [8192]u8 = undefined;
     var total: usize = 0;
 
+    // Read initial data (with short timeout for attach detection)
     while (total < buf.len) {
         const n = posix.read(conn, buf[total..]) catch break;
         if (n == 0) break;
         total += n;
+        // For hook events, data comes in one shot. Check if we have enough.
+        break;
     }
 
-    if (total == 0) return;
+    if (total == 0) return false;
 
     const data = buf[0..total];
 
     var lines = std.mem.splitScalar(u8, data, '\n');
-    const event_name = lines.next() orelse return;
+    const event_name = lines.next() orelse return false;
+
+    // Handle "attach" command — long-lived terminal relay connection
+    if (std.mem.eql(u8, event_name, "attach")) {
+        const sid_str = lines.next() orelse return false;
+        const session_id = std.fmt.parseInt(u64, std.mem.trim(u8, sid_str, " \r"), 10) catch 1;
+
+        if (!session_manager.attachLocal(session_id, conn)) {
+            _ = posix.write(conn, "error\n") catch {};
+            return false;
+        }
+
+        // Send "ok" acknowledgment
+        _ = posix.write(conn, "ok\n") catch {};
+
+        // This thread now handles local terminal input → PTY.
+        // PTY output → local terminal is handled by ioRelay via local_fd.
+        // We also handle "resize" commands inline.
+        handleAttachedSession(session_manager, session_id, conn);
+
+        // Detach when done
+        session_manager.detachLocal(session_id);
+        posix.close(conn);
+        return true; // We closed it ourselves
+    }
+
+    // Normal hook event handling
     _ = lines.next(); // length
     const rest = lines.rest();
+
+    // May need more data for large payloads
+    while (total < buf.len) {
+        var poll_fds = [1]posix.pollfd{
+            .{ .fd = conn, .events = posix.POLL.IN, .revents = 0 },
+        };
+        const ready = posix.poll(&poll_fds, 10) catch break;
+        if (ready == 0) break;
+        const n = posix.read(conn, buf[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
 
     var tool_name: []const u8 = "";
     var session_id: u64 = 1;
@@ -248,7 +412,7 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
         defer parsed.deinit();
     } else |_| {}
 
-    const msg = protocol.encodeHookEvent(allocator, event_name, tool_name, rest) catch return;
+    const msg = protocol.encodeHookEvent(allocator, event_name, tool_name, rest) catch return false;
     defer allocator.free(msg);
     broadcaster.broadcast(msg);
 
@@ -256,6 +420,51 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
 
     if (std.mem.eql(u8, event_name, "PreToolUse")) {
         _ = posix.write(conn, "{}") catch {};
+    }
+
+    return false;
+}
+
+/// Handle a locally attached terminal session.
+/// Reads input from the local terminal (via IPC conn) and writes to PTY.
+/// Runs until the connection closes or session ends.
+fn handleAttachedSession(session_manager: *SessionManager, session_id: u64, conn: posix.fd_t) void {
+    var buf: [4096]u8 = undefined;
+
+    while (true) {
+        var fds = [1]posix.pollfd{
+            .{ .fd = conn, .events = posix.POLL.IN, .revents = 0 },
+        };
+        const ready = posix.poll(&fds, 200) catch break;
+
+        // Check if session is still alive
+        if (session_manager.getSession(session_id)) |session| {
+            if (session.state == .stopped) break;
+        } else break;
+
+        if (ready == 0) continue;
+
+        if (fds[0].revents & posix.POLL.IN != 0) {
+            const n = posix.read(conn, &buf) catch break;
+            if (n == 0) break;
+            const data = buf[0..n];
+
+            // Check for inline "resize" command from the client
+            if (std.mem.startsWith(u8, data, "resize\n")) {
+                var resize_lines = std.mem.splitScalar(u8, data, '\n');
+                _ = resize_lines.next(); // "resize"
+                const rows_str = resize_lines.next() orelse continue;
+                const cols_str = resize_lines.next() orelse continue;
+                const rows = std.fmt.parseInt(u16, std.mem.trim(u8, rows_str, " \r"), 10) catch continue;
+                const cols = std.fmt.parseInt(u16, std.mem.trim(u8, cols_str, " \r"), 10) catch continue;
+                session_manager.resizeSession(session_id, rows, cols);
+                continue;
+            }
+
+            // Normal terminal input → PTY
+            session_manager.writeToSession(session_id, data) catch break;
+        }
+        if (fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) break;
     }
 }
 
