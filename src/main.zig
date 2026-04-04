@@ -115,9 +115,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try stdout.print("\n  Auth disabled -- connect directly, no token required.\n\n", .{});
     } else {
         const setup_hex = auth.getSetupTokenHex();
-        const url = try std.fmt.allocPrint(allocator, "http://{s}:{d}/?token={s}", .{ config.bind, config.port, setup_hex });
-        defer allocator.free(url);
-        try auth_mod.renderQrCode(stdout, url);
+        const pairing_code = auth_mod.generatePairingCode();
+        const signal_url = try std.fmt.allocPrint(allocator, "http://{s}:{d}", .{ config.bind, config.port });
+        defer allocator.free(signal_url);
+        try auth_mod.renderQrCode(stdout, signal_url, &pairing_code, &setup_hex);
     }
     try stdout.print("  Use 'kite run' to create a session.\n\n", .{});
     try stdout.flush();
