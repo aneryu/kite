@@ -7,6 +7,14 @@ const protocol = @import("protocol.zig");
 const ws_mod = @import("ws.zig");
 const SessionManager = @import("session_manager.zig").SessionManager;
 
+fn parseSessionIdFromPath(path: []const u8) ?u64 {
+    const prefix = "/api/sessions/";
+    if (!std.mem.startsWith(u8, path, prefix)) return null;
+    if (path.len <= prefix.len) return null;
+    const id_str = path[prefix.len..];
+    return std.fmt.parseInt(u64, id_str, 10) catch null;
+}
+
 pub const Server = struct {
     allocator: std.mem.Allocator,
     address: net.Address,
@@ -220,9 +228,11 @@ pub const Server = struct {
             .cwd = parsed.value.cwd,
             .rows = parsed.value.rows,
             .cols = parsed.value.cols,
-        }) catch {
-            try head.respond("{\"error\":\"failed to create session\"}", .{
-                .status = .internal_server_error,
+        }) catch |err| {
+            const status: std.http.Status = if (err == error.TooManySessions) .too_many_requests else .internal_server_error;
+            const msg = if (err == error.TooManySessions) "{\"error\":\"too many sessions\"}" else "{\"error\":\"failed to create session\"}";
+            try head.respond(msg, .{
+                .status = status,
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
             });
             return;
@@ -238,6 +248,7 @@ pub const Server = struct {
     fn handleSessionsApi(self: *Server, head: *http.Server.Request) !void {
         const path = head.head.target;
 
+        // GET /api/sessions — list all
         if (std.mem.eql(u8, path, "/api/sessions")) {
             const sessions = self.session_manager.listSessions(self.allocator) catch return;
             defer self.allocator.free(sessions);
@@ -266,11 +277,27 @@ pub const Server = struct {
             return;
         }
 
-        const sessions = self.session_manager.listSessions(self.allocator) catch return;
-        defer self.allocator.free(sessions);
-        if (sessions.len > 0) {
-            const s = sessions[0];
-            const state_str = switch (s.state) {
+        // /api/sessions/:id — parse ID
+        const session_id = parseSessionIdFromPath(path) orelse {
+            try head.respond("{\"error\":\"invalid session id\"}", .{
+                .status = .bad_request,
+                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            });
+            return;
+        };
+
+        // DELETE /api/sessions/:id
+        if (head.head.method == .DELETE) {
+            self.session_manager.destroySession(session_id);
+            try head.respond("{\"ok\":true}", .{
+                .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
+            });
+            return;
+        }
+
+        // GET /api/sessions/:id
+        if (self.session_manager.getSession(session_id)) |session| {
+            const state_str = switch (session.state) {
                 .starting => "starting",
                 .running => "running",
                 .waiting_input => "waiting_input",
@@ -278,13 +305,13 @@ pub const Server = struct {
             };
             const response = std.fmt.allocPrint(self.allocator,
                 \\{{"id":{d},"state":"{s}","command":"{s}","cwd":"{s}"}}
-            , .{ s.id, state_str, s.command, s.cwd }) catch return;
+            , .{ session.id, state_str, session.command, session.cwd }) catch return;
             defer self.allocator.free(response);
             try head.respond(response, .{
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
             });
         } else {
-            try head.respond("{\"error\":\"no sessions\"}", .{
+            try head.respond("{\"error\":\"session not found\"}", .{
                 .status = .not_found,
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
             });
