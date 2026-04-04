@@ -1,4 +1,5 @@
 import type { ServerMessage } from './types';
+import { getStoredToken } from './auth';
 
 type MessageHandler = (msg: ServerMessage) => void;
 
@@ -16,6 +17,10 @@ export class WsManager {
   connect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this.ws = new WebSocket(this.url);
+    this.ws.onopen = () => {
+      const token = getStoredToken();
+      if (token) this.send({ type: 'auth_token', token });
+    };
     this.ws.onmessage = (ev) => {
       try {
         const msg: ServerMessage = JSON.parse(ev.data);
@@ -51,6 +56,10 @@ export class WsManager {
     const payload = { type: 'prompt_response', text, session_id: sessionId };
     console.log('[WS] sendPromptResponse:', JSON.stringify(payload), 'readyState:', this.ws?.readyState);
     this.send(payload);
+  }
+
+  authenticate(token: string) {
+    this.send({ type: 'auth_token', token });
   }
 
   isOpen(): boolean {
