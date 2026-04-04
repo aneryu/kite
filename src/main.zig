@@ -106,15 +106,19 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var auth = Auth.init();
     auth.disabled = config.no_auth;
-    const setup_hex = auth.getSetupTokenHex();
 
     try stdout.print("\n  kite daemon started\n", .{});
     try stdout.print("  ====================\n\n", .{});
     try stdout.print("  Server: http://{s}:{d}\n", .{ config.bind, config.port });
 
-    const url = try std.fmt.allocPrint(allocator, "http://{s}:{d}/?token={s}", .{ config.bind, config.port, setup_hex });
-    defer allocator.free(url);
-    try auth_mod.renderQrCode(stdout, url);
+    if (config.no_auth) {
+        try stdout.print("\n  Auth disabled -- connect directly, no token required.\n\n", .{});
+    } else {
+        const setup_hex = auth.getSetupTokenHex();
+        const url = try std.fmt.allocPrint(allocator, "http://{s}:{d}/?token={s}", .{ config.bind, config.port, setup_hex });
+        defer allocator.free(url);
+        try auth_mod.renderQrCode(stdout, url);
+    }
     try stdout.print("  Use 'kite run' to create a session.\n\n", .{});
     try stdout.flush();
 
