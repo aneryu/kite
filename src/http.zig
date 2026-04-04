@@ -8,7 +8,7 @@ const ws_mod = @import("ws.zig");
 const SessionManager = @import("session_manager.zig").SessionManager;
 
 fn parseSessionIdFromPath(path: []const u8) ?u64 {
-    const prefix = "/api/sessions/";
+    const prefix = "/api/v1/sessions/";
     if (!std.mem.startsWith(u8, path, prefix)) return null;
     if (path.len <= prefix.len) return null;
     const id_str = path[prefix.len..];
@@ -22,6 +22,7 @@ pub const Server = struct {
     broadcaster: *ws_mod.WsBroadcaster,
     session_manager: *SessionManager,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    static_dir: ?[]const u8 = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -75,22 +76,27 @@ pub const Server = struct {
             return;
         }
 
-        if (std.mem.startsWith(u8, path, "/api/auth") and head.head.method == .POST) {
+        if (std.mem.startsWith(u8, path, "/api/v1/auth") and head.head.method == .POST) {
             self.handleAuth(&head) catch {};
             return;
         }
 
-        if (std.mem.eql(u8, path, "/api/sessions") and head.head.method == .POST) {
+        if (std.mem.eql(u8, path, "/api/v1/sessions") and head.head.method == .POST) {
             self.handleCreateSession(&head) catch {};
             return;
         }
 
-        if (std.mem.startsWith(u8, path, "/api/sessions/") and std.mem.endsWith(u8, path, "/terminal")) {
+        if (std.mem.startsWith(u8, path, "/api/v1/sessions/") and std.mem.endsWith(u8, path, "/terminal")) {
             self.handleTerminalSnapshot(&head, path) catch {};
             return;
         }
 
-        if (std.mem.startsWith(u8, path, "/api/sessions")) {
+        if (std.mem.startsWith(u8, path, "/api/v1/sessions/") and std.mem.endsWith(u8, path, "/events")) {
+            self.handleSessionEvents(&head, path) catch {};
+            return;
+        }
+
+        if (std.mem.startsWith(u8, path, "/api/v1/sessions")) {
             self.handleSessionsApi(&head) catch {};
             return;
         }
@@ -184,7 +190,7 @@ pub const Server = struct {
 
         const AuthReq = struct { setup_token: []const u8 = "" };
         const parsed = std.json.parseFromSlice(AuthReq, self.allocator, body_slice, .{ .ignore_unknown_fields = true }) catch {
-            try head.respond("", .{ .status = .bad_request });
+            try head.respond("{\"error\":\"invalid json\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
             return;
         };
         defer parsed.deinit();
@@ -197,7 +203,8 @@ pub const Server = struct {
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
             });
         } else {
-            try head.respond("{\"success\":false}", .{
+            try head.respond("{\"error\":\"invalid or expired token\"}", .{
+                .status = .unauthorized,
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
             });
         }
@@ -253,8 +260,8 @@ pub const Server = struct {
     fn handleSessionsApi(self: *Server, head: *http.Server.Request) !void {
         const path = head.head.target;
 
-        // GET /api/sessions — list all
-        if (std.mem.eql(u8, path, "/api/sessions")) {
+        // GET /api/v1/sessions — list all
+        if (std.mem.eql(u8, path, "/api/v1/sessions")) {
             const sessions = self.session_manager.listSessions(self.allocator) catch return;
             defer self.allocator.free(sessions);
 
@@ -282,7 +289,7 @@ pub const Server = struct {
             return;
         }
 
-        // /api/sessions/:id — parse ID
+        // /api/v1/sessions/:id — parse ID
         const session_id = parseSessionIdFromPath(path) orelse {
             try head.respond("{\"error\":\"invalid session id\"}", .{
                 .status = .bad_request,
@@ -291,7 +298,7 @@ pub const Server = struct {
             return;
         };
 
-        // DELETE /api/sessions/:id
+        // DELETE /api/v1/sessions/:id
         if (head.head.method == .DELETE) {
             self.session_manager.destroySession(session_id);
             try head.respond("{\"ok\":true}", .{
@@ -300,7 +307,7 @@ pub const Server = struct {
             return;
         }
 
-        // GET /api/sessions/:id
+        // GET /api/v1/sessions/:id
         if (self.session_manager.getSession(session_id)) |session| {
             const state_str = switch (session.state) {
                 .starting => "starting",
@@ -323,9 +330,43 @@ pub const Server = struct {
         }
     }
 
+    fn handleSessionEvents(self: *Server, head: *http.Server.Request, path: []const u8) !void {
+        const prefix = "/api/v1/sessions/";
+        const suffix = "/events";
+        if (path.len <= prefix.len + suffix.len) {
+            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            return;
+        }
+        const id_str = path[prefix.len .. path.len - suffix.len];
+        const session_id = std.fmt.parseInt(u64, id_str, 10) catch {
+            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            return;
+        };
+
+        const session = self.session_manager.getSession(session_id) orelse {
+            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            return;
+        };
+
+        // Build JSON array of events
+        var json_buf: std.ArrayList(u8) = .empty;
+        defer json_buf.deinit(self.allocator);
+        try json_buf.appendSlice(self.allocator, "{\"events\":[");
+        for (session.hook_events.items, 0..) |ev, i| {
+            if (i > 0) try json_buf.appendSlice(self.allocator, ",");
+            const entry = try std.fmt.allocPrint(self.allocator,
+                \\{{"event":"{s}","tool":"{s}","ts":{d}}}
+            , .{ ev.event_name, ev.tool_name, ev.timestamp });
+            defer self.allocator.free(entry);
+            try json_buf.appendSlice(self.allocator, entry);
+        }
+        try json_buf.appendSlice(self.allocator, "]}");
+        try head.respond(json_buf.items, .{ .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+    }
+
     fn handleTerminalSnapshot(self: *Server, head: *http.Server.Request, path: []const u8) !void {
-        // Extract session ID from /api/sessions/<id>/terminal
-        const prefix = "/api/sessions/";
+        // Extract session ID from /api/v1/sessions/<id>/terminal
+        const prefix = "/api/v1/sessions/";
         const suffix = "/terminal";
         if (path.len <= prefix.len + suffix.len) {
             try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
@@ -368,8 +409,48 @@ pub const Server = struct {
         try head.respond(response, .{ .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
     }
 
-    fn serveStaticFile(_: *Server, head: *http.Server.Request, path: []const u8) !void {
-        if (std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html")) {
+    fn serveStaticFile(self: *Server, head: *http.Server.Request, path: []const u8) !void {
+        const serve_path = if (std.mem.eql(u8, path, "/")) "index.html" else if (path.len > 1) path[1..] else path;
+
+        // Try external static directory first
+        if (self.static_dir) |dir| {
+            var path_buf: [1024]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, serve_path }) catch {
+                try head.respond(web.index_html, .{
+                    .extra_headers = &.{.{ .name = "Content-Type", .value = "text/html; charset=utf-8" }},
+                });
+                return;
+            };
+            const file = std.fs.openFileAbsolute(full_path, .{}) catch {
+                // Fall back to embedded
+                if (std.mem.eql(u8, serve_path, "index.html")) {
+                    try head.respond(web.index_html, .{
+                        .extra_headers = &.{.{ .name = "Content-Type", .value = "text/html; charset=utf-8" }},
+                    });
+                } else {
+                    try head.respond("Not Found", .{ .status = .not_found });
+                }
+                return;
+            };
+            defer file.close();
+
+            var buf: [65536]u8 = undefined;
+            const n = file.readAll(&buf) catch {
+                try head.respond("Read Error", .{ .status = .internal_server_error });
+                return;
+            };
+
+            // Determine content type
+            const content_type = if (std.mem.endsWith(u8, serve_path, ".html")) "text/html; charset=utf-8" else if (std.mem.endsWith(u8, serve_path, ".js")) "application/javascript" else if (std.mem.endsWith(u8, serve_path, ".css")) "text/css" else if (std.mem.endsWith(u8, serve_path, ".json")) "application/json" else "application/octet-stream";
+
+            try head.respond(buf[0..n], .{
+                .extra_headers = &.{.{ .name = "Content-Type", .value = content_type }},
+            });
+            return;
+        }
+
+        // Fallback to embedded HTML
+        if (std.mem.eql(u8, serve_path, "index.html")) {
             try head.respond(web.index_html, .{
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "text/html; charset=utf-8" }},
             });

@@ -178,7 +178,7 @@ pub const index_html =
     \\function doAuth(){
     \\  var token=document.getElementById('token-input').value.trim();
     \\  if(!token)return;
-    \\  fetch('/api/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({setup_token:token})})
+    \\  fetch('/api/v1/auth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({setup_token:token})})
     \\  .then(function(r){return r.json()}).then(function(d){
     \\    if(d.success){sessionToken=d.token;localStorage.setItem('kite_session',d.token);initApp();}
     \\    else document.getElementById('auth-error').style.display='block';
@@ -215,7 +215,7 @@ pub const index_html =
     \\  ws.onclose=function(){setTimeout(connectWs,2000)};
     \\}
     \\function restoreTerminal(sid){
-    \\  fetch('/api/sessions/'+sid+'/terminal').then(function(r){return r.json()}).then(function(d){
+    \\  fetch('/api/v1/sessions/'+sid+'/terminal').then(function(r){return r.json()}).then(function(d){
     \\    if(d.data&&term){
     \\      var bin=atob(d.data);var bytes=new Uint8Array(bin.length);
     \\      for(var j=0;j<bin.length;j++)bytes[j]=bin.charCodeAt(j);
@@ -236,7 +236,7 @@ pub const index_html =
     \\  }
     \\}
     \\function fetchSessions(){
-    \\  fetch('/api/sessions').then(function(r){return r.json()}).then(function(list){
+    \\  fetch('/api/v1/sessions').then(function(r){return r.json()}).then(function(list){
     \\    list.forEach(function(s){
     \\      if(!sessions[s.id])sessions[s.id]={id:s.id,state:s.state,command:s.command,cwd:s.cwd,activity:'',events:[]};
     \\      else{sessions[s.id].state=s.state;sessions[s.id].command=s.command;sessions[s.id].cwd=s.cwd;}
@@ -399,7 +399,7 @@ pub const index_html =
     \\function createSession(){
     \\  var cmd=document.getElementById('create-cmd').value.trim()||'claude';
     \\  hideCreateDialog();
-    \\  fetch('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})})
+    \\  fetch('/api/v1/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})})
     \\  .then(function(r){return r.json()}).then(function(d){
     \\    if(d.session_id){
     \\      sessions[d.session_id]={id:d.session_id,state:'running',command:cmd,cwd:'',activity:'',events:[]};
@@ -410,7 +410,7 @@ pub const index_html =
     \\function deleteSession(id,ev){
     \\  ev.stopPropagation();
     \\  if(!confirm('Delete session #'+id+'?'))return;
-    \\  fetch('/api/sessions/'+id,{method:'DELETE'}).then(function(){
+    \\  fetch('/api/v1/sessions/'+id,{method:'DELETE'}).then(function(){
     \\    delete sessions[id];
     \\    if(activeId===id)showList();
     \\    renderList();
