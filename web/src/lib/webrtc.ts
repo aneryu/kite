@@ -143,7 +143,7 @@ export class RtcManager {
       .then((offer) => this.pc!.setLocalDescription(offer))
       .then(() => {
         if (this.pc?.localDescription && this.signal) {
-          this.signal.sendSdpOffer(this.pc.localDescription.sdp);
+          this.signal.sendSdpOffer(this.pc.localDescription.sdp, this.pc.localDescription.type);
         }
       })
       .catch((err) => console.error('[RTC] Offer error:', err));
