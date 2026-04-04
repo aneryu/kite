@@ -223,8 +223,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         // Process signal queue messages
         const signal_msgs = signal_queue.drain() catch break;
         if (signal_msgs.len > 0) {
+            logStderr("[kite-loop] signal_queue: {d} messages", .{signal_msgs.len});
             defer signal_queue.freeBatch(signal_msgs);
             for (signal_msgs) |msg| {
+                logStderr("[kite-loop] signal msg: {s}", .{msg[0..@min(msg.len, 200)]});
                 handleSignalMessage(allocator, msg, &session_manager, &auth, &data_queue, &state_queue, config);
             }
         }
@@ -232,8 +234,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         // Process RTC state changes
         const state_msgs = state_queue.drain() catch break;
         if (state_msgs.len > 0) {
+            logStderr("[kite-loop] state_queue: {d} messages", .{state_msgs.len});
             defer state_queue.freeBatch(state_msgs);
             for (state_msgs) |msg| {
+                logStderr("[kite-loop] state msg: {s}", .{msg[0..@min(msg.len, 200)]});
                 handleRtcStateMessage(allocator, msg, &signal_client, &session_manager, &auth);
             }
         }
@@ -241,8 +245,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         // Process DataChannel messages from browser
         const data_msgs = data_queue.drain() catch break;
         if (data_msgs.len > 0) {
+            logStderr("[kite-loop] data_queue: {d} messages", .{data_msgs.len});
             defer data_queue.freeBatch(data_msgs);
             for (data_msgs) |msg| {
+                logStderr("[kite-loop] data msg: {s}", .{msg[0..@min(msg.len, 200)]});
                 handleDataChannelMessage(allocator, msg, &session_manager, &auth);
             }
         }
@@ -318,6 +324,7 @@ fn handleSignalMessage(
             return;
         };
         peer.* = RtcPeer.init(allocator, data_queue, state_queue);
+        logStderr("[kite-signal] RtcPeer allocated, setting up peer connection (stun={s})", .{config.stun_server});
         peer.setupPeerConnection(.{
             .stun_server = config.stun_server,
             .turn_server = config.turn_server,
@@ -327,14 +334,21 @@ fn handleSignalMessage(
             return;
         };
         global_rtc_peer = peer;
+        logStderr("[kite-signal] RtcPeer ready, waiting for SDP offer", .{});
         _ = session_manager;
     } else if (std.mem.eql(u8, msg.@"type", "sdp_offer")) {
+        logStderr("[kite-signal] Received SDP offer (len={d}), global_rtc_peer={}", .{ (msg.sdp orelse "").len, global_rtc_peer != null });
         if (global_rtc_peer) |peer| {
+            logStderr("[kite-signal] Setting remote description type={s}", .{msg.sdp_type orelse "offer"});
             peer.setRemoteDescription(msg.sdp orelse return, msg.sdp_type orelse "offer") catch |err| {
                 logStderr("[kite-signal] Failed to set remote description: {}", .{err});
             };
+            logStderr("[kite-signal] Remote description set successfully", .{});
+        } else {
+            logStderr("[kite-signal] WARNING: no RtcPeer to handle sdp_offer", .{});
         }
     } else if (std.mem.eql(u8, msg.@"type", "ice_candidate")) {
+        logStderr("[kite-signal] Received ICE candidate, global_rtc_peer={}", .{global_rtc_peer != null});
         if (global_rtc_peer) |peer| {
             peer.addRemoteCandidate(msg.candidate orelse return, msg.mid orelse "") catch |err| {
                 logStderr("[kite-signal] Failed to add remote candidate: {}", .{err});
@@ -369,20 +383,29 @@ fn handleRtcStateMessage(
     const msg = parsed.value;
 
     if (std.mem.eql(u8, msg.@"type", "local_description")) {
-        // Forward as sdp_answer via signal server
+        logStderr("[kite-rtc] Got local_description, forwarding as sdp_answer (sdp len={d}, type={s})", .{ (msg.sdp orelse "").len, msg.sdp_type orelse "answer" });
+        const escaped_sdp = protocol.jsonEscapeAllocPublic(allocator, msg.sdp orelse return) catch return;
+        defer allocator.free(escaped_sdp);
+        const escaped_type = protocol.jsonEscapeAllocPublic(allocator, msg.sdp_type orelse "answer") catch return;
+        defer allocator.free(escaped_type);
         const json = std.fmt.allocPrint(allocator, "{{\"type\":\"sdp_answer\",\"sdp\":\"{s}\",\"sdp_type\":\"{s}\"}}", .{
-            msg.sdp orelse return,
-            msg.sdp_type orelse "answer",
+            escaped_sdp,
+            escaped_type,
         }) catch return;
         defer allocator.free(json);
         signal_client.sendJson(json) catch |err| {
             logStderr("[kite-rtc] Failed to send sdp_answer: {}", .{err});
         };
+        logStderr("[kite-rtc] sdp_answer sent to signal server", .{});
     } else if (std.mem.eql(u8, msg.@"type", "local_candidate")) {
-        // Forward as ice_candidate via signal server
+        logStderr("[kite-rtc] Got local_candidate, forwarding via signal", .{});
+        const escaped_cand = protocol.jsonEscapeAllocPublic(allocator, msg.candidate orelse return) catch return;
+        defer allocator.free(escaped_cand);
+        const escaped_mid = protocol.jsonEscapeAllocPublic(allocator, msg.mid orelse "") catch return;
+        defer allocator.free(escaped_mid);
         const json = std.fmt.allocPrint(allocator, "{{\"type\":\"ice_candidate\",\"candidate\":\"{s}\",\"mid\":\"{s}\"}}", .{
-            msg.candidate orelse return,
-            msg.mid orelse "",
+            escaped_cand,
+            escaped_mid,
         }) catch return;
         defer allocator.free(json);
         signal_client.sendJson(json) catch |err| {
@@ -391,7 +414,7 @@ fn handleRtcStateMessage(
     } else if (std.mem.eql(u8, msg.@"type", "state_change")) {
         logStderr("[kite-rtc] State change: {s}", .{msg.state orelse "unknown"});
     } else if (std.mem.eql(u8, msg.@"type", "dc_open")) {
-        logStderr("[kite-rtc] DataChannel opened", .{});
+        logStderr("[kite-rtc] DataChannel opened!", .{});
         // Send sessions_sync to browser
         sendSessionsSync(allocator, session_manager, auth);
     }

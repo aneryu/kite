@@ -139,9 +139,12 @@ func (h *Handler) handleDaemon(ws *websocket.Conn, conn *wsConn, pairingCode str
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
+			log.Printf("[signal] daemon read error: %v", err)
 			return
 		}
+		log.Printf("[signal] daemon->browser relay: %s", truncate(data, 120))
 		if err := h.rm.RelayFromDaemon(pairingCode, data); err != nil {
+			log.Printf("[signal] relay daemon->browser error: %v", err)
 			if err == ErrRoomNotFound {
 				return
 			}
@@ -175,6 +178,9 @@ func (h *Handler) handleBrowser(ws *websocket.Conn, conn *wsConn, pairingCode st
 	// Relay loop: forward messages from browser to daemon
 	for {
 		_, data, err := ws.ReadMessage()
+		if err == nil {
+			log.Printf("[signal] browser->daemon relay: %s", truncate(data, 120))
+		}
 		if err != nil {
 			return
 		}
@@ -184,6 +190,13 @@ func (h *Handler) handleBrowser(ws *websocket.Conn, conn *wsConn, pairingCode st
 			}
 		}
 	}
+}
+
+func truncate(data []byte, max int) string {
+	if len(data) <= max {
+		return string(data)
+	}
+	return string(data[:max]) + "..."
 }
 
 // clientIP extracts the client IP from the request, checking X-Forwarded-For first.

@@ -10,6 +10,8 @@ export class RtcManager {
   private handlers: MessageHandler[] = [];
   private authenticated: boolean = false;
   private pingInterval: number | null = null;
+  private pendingCandidates: { candidate: string; mid: string }[] = [];
+  private remoteDescriptionSet = false;
 
   /** Connect to signaling server and wait for peer_joined to start WebRTC */
   async connect(signalUrl: string, pairingCode: string, stunServer?: string): Promise<void> {
@@ -150,18 +152,34 @@ export class RtcManager {
       .catch((err) => console.error('[RTC] Offer error:', err));
   }
 
-  private handleSdpAnswer(sdp: string, sdpType: RTCSdpType): void {
+  private async handleSdpAnswer(sdp: string, sdpType: RTCSdpType): Promise<void> {
     if (!this.pc) return;
-    this.pc
-      .setRemoteDescription(new RTCSessionDescription({ sdp, type: sdpType }))
-      .catch((err) => console.error('[RTC] setRemoteDescription error:', err));
+    try {
+      await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp, type: sdpType }));
+      console.log('[RTC] Remote description set');
+      this.remoteDescriptionSet = true;
+      // Flush any ICE candidates that arrived before the answer
+      for (const c of this.pendingCandidates) {
+        await this.pc.addIceCandidate(new RTCIceCandidate({ candidate: c.candidate, sdpMid: c.mid }));
+      }
+      this.pendingCandidates = [];
+    } catch (err) {
+      console.error('[RTC] setRemoteDescription error:', err);
+    }
   }
 
-  private handleRemoteCandidate(candidate: string, mid: string): void {
+  private async handleRemoteCandidate(candidate: string, mid: string): Promise<void> {
     if (!this.pc) return;
-    this.pc
-      .addIceCandidate(new RTCIceCandidate({ candidate, sdpMid: mid }))
-      .catch((err) => console.error('[RTC] addIceCandidate error:', err));
+    if (!this.remoteDescriptionSet) {
+      // Queue until remote description is set
+      this.pendingCandidates.push({ candidate, mid });
+      return;
+    }
+    try {
+      await this.pc.addIceCandidate(new RTCIceCandidate({ candidate, sdpMid: mid }));
+    } catch (err) {
+      console.error('[RTC] addIceCandidate error:', err);
+    }
   }
 
   private handlePeerLeft(): void {
@@ -170,6 +188,8 @@ export class RtcManager {
     this.dc = null;
     this.pc?.close();
     this.pc = null;
+    this.remoteDescriptionSet = false;
+    this.pendingCandidates = [];
     this.handlers.forEach((h) => h({ type: 'disconnected' }));
   }
 
