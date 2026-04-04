@@ -13,6 +13,8 @@ pub const SessionManager = struct {
     next_id: u64 = 1,
     mutex: std.Thread.Mutex = .{},
 
+    pub const max_sessions: usize = 8;
+
     pub const ManagedSession = struct {
         session: Session,
         pty: Pty,
@@ -52,6 +54,10 @@ pub const SessionManager = struct {
     pub fn createSession(self: *SessionManager, opts: CreateOptions) !u64 {
         self.mutex.lock();
         defer self.mutex.unlock();
+
+        if (self.sessions.count() >= max_sessions) {
+            return error.TooManySessions;
+        }
 
         const id = self.next_id;
         self.next_id += 1;
@@ -261,6 +267,17 @@ pub const SessionInfo = struct {
 const StopPayload = struct {
     stop_reason: []const u8 = "",
 };
+
+test "session limit" {
+    const allocator = std.testing.allocator;
+    var broadcaster = WsBroadcaster.init(allocator);
+    defer broadcaster.deinit();
+
+    var mgr = SessionManager.init(allocator, &broadcaster);
+    defer mgr.deinit();
+
+    try std.testing.expectEqual(@as(usize, 8), SessionManager.max_sessions);
+}
 
 test "session manager init/deinit" {
     const allocator = std.testing.allocator;
