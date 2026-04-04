@@ -157,7 +157,15 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try stdout.print("  Auth disabled -- connect directly, no token required.\n\n", .{});
     } else {
         const setup_hex = auth.getSetupTokenHex();
-        try auth_mod.renderQrCode(stdout, config.signal_url, &pairing_code, &setup_hex);
+        // Convert ws:// -> http://, wss:// -> https:// for the browser URL
+        const http_url = if (std.mem.startsWith(u8, config.signal_url, "wss://"))
+            try std.fmt.allocPrint(allocator, "https://{s}", .{config.signal_url[6..]})
+        else if (std.mem.startsWith(u8, config.signal_url, "ws://"))
+            try std.fmt.allocPrint(allocator, "http://{s}", .{config.signal_url[5..]})
+        else
+            try allocator.dupe(u8, config.signal_url);
+        defer allocator.free(http_url);
+        try auth_mod.renderQrCode(stdout, http_url, &pairing_code, &setup_hex);
     }
     try stdout.print("  Use 'kite run' to create a session.\n\n", .{});
     try stdout.flush();
@@ -547,6 +555,7 @@ fn handleDataChannelMessage(
     const msg = parsed_msg.value();
 
     if (std.mem.eql(u8, msg.@"type", "auth")) {
+        logStderr("[kite-dc] Handling auth message (has token={})", .{msg.token != null});
         handleAuthMessage(allocator, msg, auth);
     } else if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
         const session_id = msg.session_id orelse 1;
@@ -605,25 +614,34 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
 
     // Try as setup token first (exchange for session token)
     if (auth.validateSetupToken(token)) |session_token_hex| {
+        logStderr("[kite-auth] Setup token valid, sending session token", .{});
         const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch return;
         defer allocator.free(result);
         if (global_rtc_peer) |peer| {
-            peer.send(result) catch {};
+            peer.send(result) catch |err| {
+                logStderr("[kite-auth] Failed to send auth_result: {}", .{err});
+            };
+        } else {
+            logStderr("[kite-auth] WARNING: no rtc_peer to send auth_result", .{});
         }
         return;
     }
 
     // Try as session token
     if (auth.validateSessionToken(token)) {
+        logStderr("[kite-auth] Session token valid", .{});
         const result = protocol.encodeAuthResult(allocator, true, token) catch return;
         defer allocator.free(result);
         if (global_rtc_peer) |peer| {
-            peer.send(result) catch {};
+            peer.send(result) catch |err| {
+                logStderr("[kite-auth] Failed to send auth_result: {}", .{err});
+            };
         }
         return;
     }
 
     // Invalid token
+    logStderr("[kite-auth] Token invalid (len={d})", .{token.len});
     const result = protocol.encodeAuthResult(allocator, false, "") catch return;
     defer allocator.free(result);
     if (global_rtc_peer) |peer| {
