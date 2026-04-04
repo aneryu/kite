@@ -3,32 +3,60 @@ const protocol = @import("protocol.zig");
 
 pub const HookEventType = enum {
     SessionStart,
+    InstructionsLoaded,
+    UserPromptSubmit,
     PreToolUse,
+    PermissionRequest,
+    PermissionDenied,
     PostToolUse,
     PostToolUseFailure,
     Notification,
-    Stop,
-    UserPromptSubmit,
-    TaskCreated,
-    TaskCompleted,
     SubagentStart,
     SubagentStop,
-    PermissionRequest,
+    TaskCreated,
+    TaskCompleted,
+    Stop,
+    StopFailure,
+    TeammateIdle,
+    CwdChanged,
+    FileChanged,
+    ConfigChange,
+    WorktreeCreate,
+    WorktreeRemove,
+    PreCompact,
+    PostCompact,
+    Elicitation,
+    ElicitationResult,
+    SessionEnd,
 
     pub fn fromString(s: []const u8) ?HookEventType {
         const map = std.StaticStringMap(HookEventType).initComptime(.{
             .{ "SessionStart", .SessionStart },
+            .{ "InstructionsLoaded", .InstructionsLoaded },
+            .{ "UserPromptSubmit", .UserPromptSubmit },
             .{ "PreToolUse", .PreToolUse },
+            .{ "PermissionRequest", .PermissionRequest },
+            .{ "PermissionDenied", .PermissionDenied },
             .{ "PostToolUse", .PostToolUse },
             .{ "PostToolUseFailure", .PostToolUseFailure },
             .{ "Notification", .Notification },
-            .{ "Stop", .Stop },
-            .{ "UserPromptSubmit", .UserPromptSubmit },
-            .{ "TaskCreated", .TaskCreated },
-            .{ "TaskCompleted", .TaskCompleted },
             .{ "SubagentStart", .SubagentStart },
             .{ "SubagentStop", .SubagentStop },
-            .{ "PermissionRequest", .PermissionRequest },
+            .{ "TaskCreated", .TaskCreated },
+            .{ "TaskCompleted", .TaskCompleted },
+            .{ "Stop", .Stop },
+            .{ "StopFailure", .StopFailure },
+            .{ "TeammateIdle", .TeammateIdle },
+            .{ "CwdChanged", .CwdChanged },
+            .{ "FileChanged", .FileChanged },
+            .{ "ConfigChange", .ConfigChange },
+            .{ "WorktreeCreate", .WorktreeCreate },
+            .{ "WorktreeRemove", .WorktreeRemove },
+            .{ "PreCompact", .PreCompact },
+            .{ "PostCompact", .PostCompact },
+            .{ "Elicitation", .Elicitation },
+            .{ "ElicitationResult", .ElicitationResult },
+            .{ "SessionEnd", .SessionEnd },
         });
         return map.get(s);
     }
@@ -36,17 +64,31 @@ pub const HookEventType = enum {
     pub fn toString(self: HookEventType) []const u8 {
         return switch (self) {
             .SessionStart => "SessionStart",
+            .InstructionsLoaded => "InstructionsLoaded",
+            .UserPromptSubmit => "UserPromptSubmit",
             .PreToolUse => "PreToolUse",
+            .PermissionRequest => "PermissionRequest",
+            .PermissionDenied => "PermissionDenied",
             .PostToolUse => "PostToolUse",
             .PostToolUseFailure => "PostToolUseFailure",
             .Notification => "Notification",
-            .Stop => "Stop",
-            .UserPromptSubmit => "UserPromptSubmit",
-            .TaskCreated => "TaskCreated",
-            .TaskCompleted => "TaskCompleted",
             .SubagentStart => "SubagentStart",
             .SubagentStop => "SubagentStop",
-            .PermissionRequest => "PermissionRequest",
+            .TaskCreated => "TaskCreated",
+            .TaskCompleted => "TaskCompleted",
+            .Stop => "Stop",
+            .StopFailure => "StopFailure",
+            .TeammateIdle => "TeammateIdle",
+            .CwdChanged => "CwdChanged",
+            .FileChanged => "FileChanged",
+            .ConfigChange => "ConfigChange",
+            .WorktreeCreate => "WorktreeCreate",
+            .WorktreeRemove => "WorktreeRemove",
+            .PreCompact => "PreCompact",
+            .PostCompact => "PostCompact",
+            .Elicitation => "Elicitation",
+            .ElicitationResult => "ElicitationResult",
+            .SessionEnd => "SessionEnd",
         };
     }
 };
@@ -130,6 +172,44 @@ pub const ClaudeCodeConfig = struct {
 };
 
 pub const IPC_SOCKET_PATH = "/tmp/kite.sock";
+
+test "HookEventType fromString covers all 26 events" {
+    const expected = [_]struct { str: []const u8, val: HookEventType }{
+        .{ .str = "SessionStart", .val = .SessionStart },
+        .{ .str = "InstructionsLoaded", .val = .InstructionsLoaded },
+        .{ .str = "UserPromptSubmit", .val = .UserPromptSubmit },
+        .{ .str = "PreToolUse", .val = .PreToolUse },
+        .{ .str = "PermissionRequest", .val = .PermissionRequest },
+        .{ .str = "PermissionDenied", .val = .PermissionDenied },
+        .{ .str = "PostToolUse", .val = .PostToolUse },
+        .{ .str = "PostToolUseFailure", .val = .PostToolUseFailure },
+        .{ .str = "Notification", .val = .Notification },
+        .{ .str = "SubagentStart", .val = .SubagentStart },
+        .{ .str = "SubagentStop", .val = .SubagentStop },
+        .{ .str = "TaskCreated", .val = .TaskCreated },
+        .{ .str = "TaskCompleted", .val = .TaskCompleted },
+        .{ .str = "Stop", .val = .Stop },
+        .{ .str = "StopFailure", .val = .StopFailure },
+        .{ .str = "TeammateIdle", .val = .TeammateIdle },
+        .{ .str = "CwdChanged", .val = .CwdChanged },
+        .{ .str = "FileChanged", .val = .FileChanged },
+        .{ .str = "ConfigChange", .val = .ConfigChange },
+        .{ .str = "WorktreeCreate", .val = .WorktreeCreate },
+        .{ .str = "WorktreeRemove", .val = .WorktreeRemove },
+        .{ .str = "PreCompact", .val = .PreCompact },
+        .{ .str = "PostCompact", .val = .PostCompact },
+        .{ .str = "Elicitation", .val = .Elicitation },
+        .{ .str = "ElicitationResult", .val = .ElicitationResult },
+        .{ .str = "SessionEnd", .val = .SessionEnd },
+    };
+    for (expected) |e| {
+        const result = HookEventType.fromString(e.str);
+        try std.testing.expect(result != null);
+        try std.testing.expectEqual(e.val, result.?);
+        try std.testing.expectEqualStrings(e.str, result.?.toString());
+    }
+    try std.testing.expect(HookEventType.fromString("Bogus") == null);
+}
 
 pub fn sendHookToServer(allocator: std.mem.Allocator, event_name: []const u8, raw_json: []const u8) !?[]u8 {
     const stream = std.net.connectUnixSocket(IPC_SOCKET_PATH) catch return null;
