@@ -86,9 +86,9 @@ func (rm *RoomManager) Join(code string, browser Sender, ip string) error {
 		return ErrRoomNotFound
 	}
 
-	if room.Locked {
-		rm.recordAttempt(ip)
-		return ErrRoomLocked
+	if room.Locked && room.Browser != nil {
+		// Kick the old browser — new connection replaces it
+		room.Browser.Send([]byte(`{"type":"peer_replaced"}`))
 	}
 
 	room.Browser = browser

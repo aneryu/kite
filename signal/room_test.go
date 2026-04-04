@@ -2,6 +2,7 @@ package signal
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +37,15 @@ func (m *mockSender) Messages() [][]byte {
 	out := make([][]byte, len(m.messages))
 	copy(out, m.messages)
 	return out
+}
+
+func (m *mockSender) hasMessage(msgType string) bool {
+	for _, msg := range m.Messages() {
+		if strings.Contains(string(msg), `"type":"`+msgType+`"`) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRegisterAndJoin(t *testing.T) {
@@ -85,7 +95,7 @@ func TestDuplicateRegister(t *testing.T) {
 	}
 }
 
-func TestRoomLocking(t *testing.T) {
+func TestRoomLocking_ReplacesOldBrowser(t *testing.T) {
 	rm := NewRoomManager()
 	daemon := newMockSender()
 	browser1 := newMockSender()
@@ -94,10 +104,21 @@ func TestRoomLocking(t *testing.T) {
 	rm.Register("ABCDEF", daemon)
 	rm.Join("ABCDEF", browser1, "1.2.3.4")
 
-	// Room should be locked now; second browser cannot join
+	// Second browser replaces the first (no error)
 	err := rm.Join("ABCDEF", browser2, "5.6.7.8")
-	if !errors.Is(err, ErrRoomLocked) {
-		t.Fatalf("expected ErrRoomLocked, got %v", err)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Old browser should receive peer_replaced
+	if !browser1.hasMessage("peer_replaced") {
+		t.Fatal("old browser should receive peer_replaced")
+	}
+
+	// Messages should now go to browser2
+	rm.RelayFromDaemon("ABCDEF", []byte(`{"type":"test"}`))
+	if !browser2.hasMessage("test") {
+		t.Fatal("new browser should receive relayed messages")
 	}
 }
 
