@@ -141,7 +141,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const server_thread = try std.Thread.spawn(.{}, HttpServer.run, .{&http_server});
     _ = server_thread;
 
-    const ipc_thread = try std.Thread.spawn(.{}, runIpcListener, .{ allocator, &broadcaster, &session_manager });
+    const ipc_thread = try std.Thread.spawn(.{}, runIpcListener, .{ allocator, &session_manager });
     _ = ipc_thread;
 
     try stdout.print("  Press Ctrl+C to stop the daemon.\n", .{});
@@ -182,7 +182,7 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var stdout_writer = stdout_file.writer(&stdout_buf);
     const stdout = &stdout_writer.interface;
 
-    // Step 1: Create session via HTTP API (include terminal size)
+    // Step 1: Create session via local IPC (include terminal size)
     const stdin_fd = posix.STDIN_FILENO;
 
     var session_id: u64 = 1;
@@ -198,54 +198,35 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
             term_cols = ws.cols;
         }
 
-        const address = try std.net.Address.parseIp("127.0.0.1", config.port);
-        const http_stream = std.net.tcpConnectToAddress(address) catch {
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd = std.posix.getcwd(&cwd_buf) catch "";
+        const ipc_stream = std.net.connectUnixSocket(hooks.IPC_SOCKET_PATH) catch {
             try stdout.print("Cannot connect to kite daemon. Is it running? (kite start)\n", .{});
             try stdout.flush();
             return;
         };
+        defer ipc_stream.close();
 
-        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const cwd = std.posix.getcwd(&cwd_buf) catch "";
-        const body = try std.fmt.allocPrint(allocator, "{{\"command\":\"{s}\",\"cwd\":\"{s}\",\"rows\":{d},\"cols\":{d}}}", .{ config.command, cwd, term_rows, term_cols });
-        defer allocator.free(body);
-
-        const request = try std.fmt.allocPrint(allocator,
-            "POST /api/v1/sessions HTTP/1.1\r\nHost: 127.0.0.1:{d}\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}",
-            .{ config.port, body.len, body },
-        );
-        defer allocator.free(request);
-
-        http_stream.writeAll(request) catch {
-            http_stream.close();
-            try stdout.print("Failed to send request to daemon.\n", .{});
+        const create_cmd = try std.fmt.allocPrint(allocator, "create_session\n{s}\n{s}\n{d}\n{d}\n", .{ config.command, cwd, term_rows, term_cols });
+        defer allocator.free(create_cmd);
+        ipc_stream.writeAll(create_cmd) catch {
+            try stdout.print("Failed to create session via daemon IPC.\n", .{});
             try stdout.flush();
             return;
         };
 
-        // Read HTTP response to get session_id
-        var response_buf: [4096]u8 = undefined;
-        var total: usize = 0;
-        while (total < response_buf.len) {
-            const n = http_stream.read(response_buf[total..]) catch break;
-            if (n == 0) break;
-            total += n;
+        var resp_buf: [64]u8 = undefined;
+        const resp_n = ipc_stream.read(&resp_buf) catch 0;
+        if (resp_n == 0) {
+            try stdout.print("Failed to create session via daemon IPC.\n", .{});
+            try stdout.flush();
+            return;
         }
-        http_stream.close();
-
-        if (total > 0) {
-            const response = response_buf[0..total];
-            if (std.mem.indexOf(u8, response, "\r\n\r\n")) |body_start| {
-                const resp_body = response[body_start + 4 ..];
-                const parsed = std.json.parseFromSlice(struct { session_id: u64 = 0 }, allocator, resp_body, .{
-                    .ignore_unknown_fields = true,
-                }) catch null;
-                if (parsed) |p| {
-                    session_id = p.value.session_id;
-                    p.deinit();
-                }
-            }
-        }
+        session_id = std.fmt.parseInt(u64, std.mem.trim(u8, resp_buf[0..resp_n], " \r\n"), 10) catch {
+            try stdout.print("Failed to parse session id from daemon.\n", .{});
+            try stdout.flush();
+            return;
+        };
     }
 
     // Step 2: Attach to session via IPC Unix socket
@@ -364,7 +345,7 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try stdout.flush();
 }
 
-fn runIpcListener(allocator: std.mem.Allocator, broadcaster: *WsBroadcaster, session_manager: *SessionManager) void {
+fn runIpcListener(allocator: std.mem.Allocator, session_manager: *SessionManager) void {
     std.fs.deleteFileAbsolute(hooks.IPC_SOCKET_PATH) catch {};
 
     const server = std.net.Address.initUnix(hooks.IPC_SOCKET_PATH) catch return;
@@ -378,7 +359,7 @@ fn runIpcListener(allocator: std.mem.Allocator, broadcaster: *WsBroadcaster, ses
         const conn = posix.accept(sock, null, null, posix.SOCK.CLOEXEC) catch continue;
         // handleIpcConnection returns true if it's a long-lived attach connection
         // (already handled, don't close). Returns false for normal hook events.
-        const is_attach = handleIpcConnection(allocator, conn, broadcaster, session_manager);
+        const is_attach = handleIpcConnection(allocator, conn, session_manager);
         if (!is_attach) {
             posix.close(conn);
         }
@@ -386,7 +367,7 @@ fn runIpcListener(allocator: std.mem.Allocator, broadcaster: *WsBroadcaster, ses
 }
 
 /// Returns true if this is an attach connection (long-lived, caller should NOT close).
-fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcaster: *WsBroadcaster, session_manager: *SessionManager) bool {
+fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, session_manager: *SessionManager) bool {
     var buf: [8192]u8 = undefined;
     var total: usize = 0;
 
@@ -406,13 +387,37 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
     var lines = std.mem.splitScalar(u8, data, '\n');
     const event_name = lines.next() orelse return false;
 
+    if (std.mem.eql(u8, event_name, "create_session")) {
+        const command = lines.next() orelse return false;
+        const cwd = lines.next() orelse return false;
+        const rows_str = lines.next() orelse return false;
+        const cols_str = lines.next() orelse return false;
+        const rows = std.fmt.parseInt(u16, std.mem.trim(u8, rows_str, " \r"), 10) catch 24;
+        const cols = std.fmt.parseInt(u16, std.mem.trim(u8, cols_str, " \r"), 10) catch 80;
+
+        const session_id = session_manager.createSession(.{
+            .command = std.mem.trimRight(u8, command, "\r"),
+            .cwd = std.mem.trimRight(u8, cwd, "\r"),
+            .rows = rows,
+            .cols = cols,
+        }) catch {
+            _ = posix.write(conn, "error\n") catch {};
+            return false;
+        };
+
+        const response = std.fmt.allocPrint(allocator, "{d}\n", .{session_id}) catch return false;
+        defer allocator.free(response);
+        _ = posix.write(conn, response) catch {};
+        return false;
+    }
+
     // Handle "attach" command — long-lived terminal relay connection
     if (std.mem.eql(u8, event_name, "attach")) {
         const sid_str = lines.next() orelse return false;
         const session_id = std.fmt.parseInt(u64, std.mem.trim(u8, sid_str, " \r"), 10) catch 1;
 
         // Verify session exists before attaching
-        if (session_manager.getSession(session_id) == null) {
+        if (!session_manager.sessionExists(session_id)) {
             _ = posix.write(conn, "error\n") catch {};
             return false;
         }
@@ -428,13 +433,10 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
         }
 
         // Send buffered terminal history so client sees current state
-        if (session_manager.getSession(session_id)) |session| {
-            const history = session.terminal_buffer.slice();
-            if (history.first.len > 0) {
-                _ = posix.write(conn, history.first) catch {};
-            }
-            if (history.second.len > 0) {
-                _ = posix.write(conn, history.second) catch {};
+        if (session_manager.getTerminalSnapshot(allocator, session_id)) |history| {
+            defer allocator.free(history);
+            if (history.len > 0) {
+                _ = posix.write(conn, history) catch {};
             }
         }
 
@@ -480,10 +482,6 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
 
     // Log raw hook request for mock API replay
     logHookRequest(allocator, event_name, rest);
-
-    const msg = protocol.encodeHookEvent(allocator, event_name, tool_name, rest, session_id) catch return false;
-    defer allocator.free(msg);
-    broadcaster.broadcast(msg);
 
     session_manager.handleHookEvent(session_id, event_name, rest);
 
@@ -578,9 +576,8 @@ fn handleAttachedSession(session_manager: *SessionManager, session_id: u64, conn
         const ready = posix.poll(&fds, 200) catch break;
 
         // Check if session is still alive
-        if (session_manager.getSession(session_id)) |session| {
-            if (session.state == .stopped) break;
-        } else break;
+        const state = session_manager.getSessionState(session_id) orelse break;
+        if (state == .stopped) break;
 
         if (ready == 0) continue;
 
@@ -597,7 +594,7 @@ fn handleAttachedSession(session_manager: *SessionManager, session_id: u64, conn
                 const cols_str = resize_lines.next() orelse continue;
                 const rows = std.fmt.parseInt(u16, std.mem.trim(u8, rows_str, " \r"), 10) catch continue;
                 const cols = std.fmt.parseInt(u16, std.mem.trim(u8, cols_str, " \r"), 10) catch continue;
-                session_manager.resizeSession(session_id, rows, cols);
+                _ = session_manager.resizeSession(session_id, rows, cols);
                 continue;
             }
 
