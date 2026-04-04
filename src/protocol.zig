@@ -11,15 +11,6 @@ pub fn encodeTerminalOutput(allocator: std.mem.Allocator, data: []const u8, sess
     , .{ encoded, session_id });
 }
 
-pub fn encodeHookEvent(allocator: std.mem.Allocator, event_name: []const u8, tool_name: []const u8, raw_json: []const u8, session_id: u64) ![]u8 {
-    const escaped_detail = try jsonEscapeAlloc(allocator, raw_json);
-    defer allocator.free(escaped_detail);
-
-    return std.fmt.allocPrint(allocator,
-        \\{{"type":"hook_event","event":"{s}","tool":"{s}","detail":"{s}","ts":{d},"session_id":{d}}}
-    , .{ event_name, tool_name, escaped_detail, std.time.timestamp(), session_id });
-}
-
 pub fn encodeSessionStatus(allocator: std.mem.Allocator, state: []const u8, session_id: u64) ![]u8 {
     return std.fmt.allocPrint(allocator,
         \\{{"type":"session_status","state":"{s}","session_id":{d}}}
@@ -95,11 +86,11 @@ pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summar
     try opts_buf.append(allocator, ']');
 
     const state_str = switch (state) {
-        .starting => "starting",
         .running => "running",
-        .idle => "idle",
-        .waiting_input => "waiting_input",
         .asking => "asking",
+        .waiting_permission => "waiting_permission",
+        .waiting_input => "waiting_input",
+        .idle => "idle",
         .stopped => "stopped",
     };
 
@@ -109,17 +100,25 @@ pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summar
 }
 
 pub fn encodeTaskUpdate(allocator: std.mem.Allocator, session_id: u64, task_id: []const u8, subject: []const u8, completed: bool) ![]u8 {
+    const escaped_task_id = try jsonEscapeAlloc(allocator, task_id);
+    defer allocator.free(escaped_task_id);
     const escaped_subject = try jsonEscapeAlloc(allocator, subject);
     defer allocator.free(escaped_subject);
     return std.fmt.allocPrint(allocator,
         \\{{"type":"task_update","session_id":{d},"task_id":"{s}","subject":"{s}","completed":{s}}}
-    , .{ session_id, task_id, escaped_subject, if (completed) "true" else "false" });
+    , .{ session_id, escaped_task_id, escaped_subject, if (completed) "true" else "false" });
 }
 
-pub fn encodeSubagentUpdate(allocator: std.mem.Allocator, session_id: u64, agent_id: []const u8, agent_type: []const u8, completed: bool, elapsed_ms: i64) ![]u8 {
+pub fn encodeSubagentUpdate(allocator: std.mem.Allocator, session_id: u64, agent_id: []const u8, agent_type: []const u8, description: []const u8, completed: bool, elapsed_ms: i64) ![]u8 {
+    const escaped_agent_id = try jsonEscapeAlloc(allocator, agent_id);
+    defer allocator.free(escaped_agent_id);
+    const escaped_agent_type = try jsonEscapeAlloc(allocator, agent_type);
+    defer allocator.free(escaped_agent_type);
+    const escaped_description = try jsonEscapeAlloc(allocator, description);
+    defer allocator.free(escaped_description);
     return std.fmt.allocPrint(allocator,
-        \\{{"type":"subagent_update","session_id":{d},"agent_id":"{s}","agent_type":"{s}","completed":{s},"elapsed_ms":{d}}}
-    , .{ session_id, agent_id, agent_type, if (completed) "true" else "false", elapsed_ms });
+        \\{{"type":"subagent_update","session_id":{d},"agent_id":"{s}","agent_type":"{s}","description":"{s}","completed":{s},"elapsed_ms":{d}}}
+    , .{ session_id, escaped_agent_id, escaped_agent_type, escaped_description, if (completed) "true" else "false", elapsed_ms });
 }
 
 pub const QuestionInfo = @import("session.zig").PromptQuestion;
@@ -130,11 +129,11 @@ pub fn encodeAskPromptRequest(allocator: std.mem.Allocator, session_id: u64, que
     errdefer buf.deinit(allocator);
 
     const state_str = switch (state) {
-        .starting => "starting",
         .running => "running",
-        .idle => "idle",
-        .waiting_input => "waiting_input",
         .asking => "asking",
+        .waiting_permission => "waiting_permission",
+        .waiting_input => "waiting_input",
+        .idle => "idle",
         .stopped => "stopped",
     };
 
@@ -168,9 +167,11 @@ pub fn encodeAskPromptRequest(allocator: std.mem.Allocator, session_id: u64, que
 
 pub fn encodeActivityUpdate(allocator: std.mem.Allocator, session_id: u64, tool_name: ?[]const u8) ![]u8 {
     if (tool_name) |tn| {
+        const escaped_tool_name = try jsonEscapeAlloc(allocator, tn);
+        defer allocator.free(escaped_tool_name);
         return std.fmt.allocPrint(allocator,
             \\{{"type":"activity_update","session_id":{d},"tool_name":"{s}"}}
-        , .{ session_id, tn });
+        , .{ session_id, escaped_tool_name });
     } else {
         return std.fmt.allocPrint(allocator,
             \\{{"type":"activity_update","session_id":{d},"tool_name":null}}
@@ -180,11 +181,11 @@ pub fn encodeActivityUpdate(allocator: std.mem.Allocator, session_id: u64, tool_
 
 pub fn encodeSessionStateChange(allocator: std.mem.Allocator, session_id: u64, state: @import("session.zig").SessionState) ![]u8 {
     const state_str = switch (state) {
-        .starting => "starting",
         .running => "running",
-        .idle => "idle",
-        .waiting_input => "waiting_input",
         .asking => "asking",
+        .waiting_permission => "waiting_permission",
+        .waiting_input => "waiting_input",
+        .idle => "idle",
         .stopped => "stopped",
     };
     return std.fmt.allocPrint(allocator,
@@ -201,6 +202,21 @@ pub fn encodeLastMessageUpdate(allocator: std.mem.Allocator, session_id: u64, me
 }
 
 pub const jsonEscapeAllocPublic = jsonEscapeAlloc;
+pub const appendJsonEscapedPublic = appendJsonEscaped;
+
+pub fn appendJsonStringField(allocator: std.mem.Allocator, out: *std.ArrayList(u8), key: []const u8, value: []const u8) !void {
+    try out.appendSlice(allocator, "\"");
+    try out.appendSlice(allocator, key);
+    try out.appendSlice(allocator, "\":\"");
+    try appendJsonEscaped(out, allocator, value);
+    try out.appendSlice(allocator, "\"");
+}
+
+pub fn appendJsonStringValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    try out.appendSlice(allocator, "\"");
+    try appendJsonEscaped(out, allocator, value);
+    try out.appendSlice(allocator, "\"");
+}
 
 fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -226,6 +242,27 @@ fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+fn appendJsonEscaped(out: *std.ArrayList(u8), allocator: std.mem.Allocator, input: []const u8) !void {
+    for (input) |ch| {
+        switch (ch) {
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '\n' => try out.appendSlice(allocator, "\\n"),
+            '\r' => try out.appendSlice(allocator, "\\r"),
+            '\t' => try out.appendSlice(allocator, "\\t"),
+            else => {
+                if (ch < 0x20) {
+                    var buf: [6]u8 = undefined;
+                    const hex = std.fmt.bufPrint(&buf, "\\u{x:0>4}", .{ch}) catch continue;
+                    try out.appendSlice(allocator, hex);
+                } else {
+                    try out.append(allocator, ch);
+                }
+            },
+        }
+    }
 }
 
 /// Extract the "tool_input":{...} JSON value from a raw hook body.
