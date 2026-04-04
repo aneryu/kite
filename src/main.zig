@@ -18,6 +18,7 @@ const Config = struct {
     attach_id: ?u64 = null,
     static_dir: ?[]const u8 = null,
     no_auth: bool = false,
+    signal_url: []const u8 = "ws://localhost:8080",
 };
 
 const Command = enum {
@@ -51,7 +52,7 @@ pub fn main() !void {
         .start => try runStart(allocator, args[2..]),
         .run => try runRun(allocator, args[2..]),
         .hook => try runHook(allocator, args[2..]),
-        .setup => try runSetup(allocator),
+        .setup => try runSetup(allocator, args[2..]),
         .status => try runStatus(),
         .help => printUsage(),
     }
@@ -71,8 +72,36 @@ fn parseCommand(arg: []const u8) ?Command {
     return map.get(arg);
 }
 
+const FileConfig = struct {
+    signal_url: []const u8 = "ws://localhost:8080",
+};
+
+fn readConfigFile(allocator: std.mem.Allocator) ?FileConfig {
+    const home = std.posix.getenv("HOME") orelse return null;
+    const config_path = std.fmt.allocPrint(allocator, "{s}/.config/kite/config.json", .{home}) catch return null;
+    defer allocator.free(config_path);
+
+    const file = std.fs.openFileAbsolute(config_path, .{}) catch return null;
+    defer file.close();
+
+    const contents = file.readToEndAlloc(allocator, 4096) catch return null;
+    defer allocator.free(contents);
+
+    const parsed = std.json.parseFromSlice(FileConfig, allocator, contents, .{ .ignore_unknown_fields = true }) catch return null;
+    // Dupe the signal_url so it outlives the parsed value
+    const url = allocator.dupe(u8, parsed.value.signal_url) catch return null;
+    parsed.deinit();
+    return FileConfig{ .signal_url = url };
+}
+
 fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var config = Config{};
+
+    // Read config file defaults
+    if (readConfigFile(allocator)) |file_config| {
+        config.signal_url = file_config.signal_url;
+        // Note: file_config memory is leaked intentionally (lives for program duration)
+    }
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -87,6 +116,9 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--no-auth")) {
             config.no_auth = true;
+        } else if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
+            config.signal_url = args[i + 1];
+            i += 1;
         }
     }
 
@@ -653,18 +685,50 @@ fn runHook(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 }
 
-fn runSetup(allocator: std.mem.Allocator) !void {
+fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stdout_file = std.fs.File.stdout();
     var stdout_buf: [4096]u8 = undefined;
     var stdout_writer = stdout_file.writer(&stdout_buf);
     const stdout = &stdout_writer.interface;
 
-    const config = try hooks.ClaudeCodeConfig.generateHooksConfig(allocator, 7890);
-    defer allocator.free(config);
+    // Parse --signal-url argument
+    var signal_url: []const u8 = "ws://localhost:8080";
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
+            signal_url = args[i + 1];
+            i += 1;
+        }
+    }
+
+    // Write config file
+    const home = std.posix.getenv("HOME") orelse return;
+    const config_dir = try std.fmt.allocPrint(allocator, "{s}/.config/kite", .{home});
+    defer allocator.free(config_dir);
+
+    // Create parent ~/.config first, then ~/.config/kite
+    const parent_dir = try std.fmt.allocPrint(allocator, "{s}/.config", .{home});
+    defer allocator.free(parent_dir);
+    std.fs.makeDirAbsolute(parent_dir) catch {};
+    std.fs.makeDirAbsolute(config_dir) catch {};
+
+    const config_path = try std.fmt.allocPrint(allocator, "{s}/config.json", .{config_dir});
+    defer allocator.free(config_path);
+    const config_json = try std.fmt.allocPrint(allocator, "{{\"signal_url\":\"{s}\"}}\n", .{signal_url});
+    defer allocator.free(config_json);
+    const file = try std.fs.createFileAbsolute(config_path, .{});
+    defer file.close();
+    try file.writeAll(config_json);
+
+    try stdout.print("Config saved to {s}\n", .{config_path});
+    try stdout.print("  signal_url: {s}\n\n", .{signal_url});
+
+    const hooks_config = try hooks.ClaudeCodeConfig.generateHooksConfig(allocator, 7890);
+    defer allocator.free(hooks_config);
 
     try stdout.print("Add the following to your Claude Code settings\n", .{});
     try stdout.print("(~/.claude/settings.json or .claude/settings.json):\n\n", .{});
-    try stdout.print("{s}\n", .{config});
+    try stdout.print("{s}\n", .{hooks_config});
     try stdout.flush();
 }
 
@@ -694,15 +758,19 @@ fn printUsage() void {
         \\  kite start [options]    Start the kite daemon
         \\  kite run [options]      Create a new session in the daemon
         \\  kite hook --event <E>   Handle a Claude Code hook event (internal)
-        \\  kite setup              Show Claude Code hooks configuration
+        \\  kite setup [options]    Configure kite and show Claude Code hooks config
         \\  kite status             Check if kite daemon is running
         \\  kite help               Show this help
+        \\
+        \\Options for 'setup':
+        \\  --signal-url <URL>     Signal server URL (default: ws://localhost:8080)
         \\
         \\Options for 'start':
         \\  --port <PORT>          Server port (default: 7890)
         \\  --bind <ADDR>          Bind address (default: 0.0.0.0)
         \\  --static-dir <DIR>     Serve static files from directory
         \\  --no-auth              Disable authentication (development only)
+        \\  --signal-url <URL>     Signal server URL (overrides config file)
         \\
         \\Options for 'run':
         \\  --cmd <CMD>       Command to run (default: claude)
