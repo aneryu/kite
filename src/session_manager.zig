@@ -1,7 +1,8 @@
 const std = @import("std");
 const posix = std.posix;
 const Pty = @import("pty.zig").Pty;
-const Session = @import("session.zig").Session;
+const session_mod = @import("session.zig");
+const Session = session_mod.Session;
 const WsBroadcaster = @import("ws.zig").WsBroadcaster;
 const protocol = @import("protocol.zig");
 const prompt_parser = @import("prompt_parser.zig");
@@ -210,11 +211,90 @@ pub const SessionManager = struct {
         } else if (std.mem.eql(u8, event_name, "SessionStart")) {
             session.state = .running;
             session.clearPromptContext();
+        } else if (std.mem.eql(u8, event_name, "PreToolUse")) {
+            self.handlePreToolUse(session, raw_json);
+        } else if (std.mem.eql(u8, event_name, "PostToolUse") or std.mem.eql(u8, event_name, "PostToolUseFailure")) {
+            // Clear current activity on tool completion or failure
+            if (session.current_activity) |act| {
+                self.allocator.free(act.tool_name);
+                if (act.summary.len > 0) self.allocator.free(act.summary);
+            }
+            session.current_activity = null;
+        } else if (std.mem.eql(u8, event_name, "TaskCreated")) {
+            self.handleTaskCreated(session, raw_json);
+        } else if (std.mem.eql(u8, event_name, "TaskCompleted")) {
+            self.handleTaskCompleted(session, raw_json);
+        } else if (std.mem.eql(u8, event_name, "SubagentStart")) {
+            self.handleSubagentStart(session, raw_json);
+        } else if (std.mem.eql(u8, event_name, "SubagentStop")) {
+            self.handleSubagentStop(session, raw_json);
         }
 
         const state_msg = protocol.encodeSessionStateChange(self.allocator, session.id, session.state) catch return;
         defer self.allocator.free(state_msg);
         self.broadcaster.broadcast(state_msg);
+    }
+
+    fn handlePreToolUse(self: *SessionManager, session: *Session, raw_json: []const u8) void {
+        const Payload = struct { tool_name: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(Payload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch return;
+        defer parsed.deinit();
+        if (session.current_activity) |act| {
+            self.allocator.free(act.tool_name);
+            if (act.summary.len > 0) self.allocator.free(act.summary);
+        }
+        session.current_activity = .{
+            .tool_name = self.allocator.dupe(u8, parsed.value.tool_name) catch return,
+        };
+    }
+
+    fn handleTaskCreated(self: *SessionManager, session: *Session, raw_json: []const u8) void {
+        const Payload = struct { task_id: []const u8 = "", task_subject: []const u8 = "", task_description: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(Payload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch return;
+        defer parsed.deinit();
+        const task = session_mod.TaskInfo{
+            .id = self.allocator.dupe(u8, parsed.value.task_id) catch return,
+            .subject = self.allocator.dupe(u8, parsed.value.task_subject) catch return,
+            .description = if (parsed.value.task_description.len > 0) self.allocator.dupe(u8, parsed.value.task_description) catch return else "",
+        };
+        session.tasks.append(self.allocator, task) catch return;
+    }
+
+    fn handleTaskCompleted(self: *SessionManager, session: *Session, raw_json: []const u8) void {
+        const Payload = struct { task_id: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(Payload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch return;
+        defer parsed.deinit();
+        for (session.tasks.items) |*task| {
+            if (std.mem.eql(u8, task.id, parsed.value.task_id)) {
+                task.completed = true;
+                break;
+            }
+        }
+    }
+
+    fn handleSubagentStart(self: *SessionManager, session: *Session, raw_json: []const u8) void {
+        const Payload = struct { agent_id: []const u8 = "", agent_type: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(Payload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch return;
+        defer parsed.deinit();
+        const sa = session_mod.SubagentInfo{
+            .id = self.allocator.dupe(u8, parsed.value.agent_id) catch return,
+            .agent_type = self.allocator.dupe(u8, parsed.value.agent_type) catch return,
+            .started_at = std.time.timestamp(),
+        };
+        session.subagents.append(self.allocator, sa) catch return;
+    }
+
+    fn handleSubagentStop(self: *SessionManager, session: *Session, raw_json: []const u8) void {
+        const Payload = struct { agent_id: []const u8 = "" };
+        const parsed = std.json.parseFromSlice(Payload, self.allocator, raw_json, .{ .ignore_unknown_fields = true }) catch return;
+        defer parsed.deinit();
+        for (session.subagents.items) |*sa| {
+            if (std.mem.eql(u8, sa.id, parsed.value.agent_id)) {
+                sa.completed = true;
+                sa.elapsed_ms = (std.time.timestamp() - sa.started_at) * 1000;
+                break;
+            }
+        }
     }
 
     fn getTerminalTail(session: *Session) []const u8 {

@@ -5,18 +5,28 @@ pub const HookEventType = enum {
     SessionStart,
     PreToolUse,
     PostToolUse,
+    PostToolUseFailure,
     Notification,
     Stop,
     UserPromptSubmit,
+    TaskCreated,
+    TaskCompleted,
+    SubagentStart,
+    SubagentStop,
 
     pub fn fromString(s: []const u8) ?HookEventType {
         const map = std.StaticStringMap(HookEventType).initComptime(.{
             .{ "SessionStart", .SessionStart },
             .{ "PreToolUse", .PreToolUse },
             .{ "PostToolUse", .PostToolUse },
+            .{ "PostToolUseFailure", .PostToolUseFailure },
             .{ "Notification", .Notification },
             .{ "Stop", .Stop },
             .{ "UserPromptSubmit", .UserPromptSubmit },
+            .{ "TaskCreated", .TaskCreated },
+            .{ "TaskCompleted", .TaskCompleted },
+            .{ "SubagentStart", .SubagentStart },
+            .{ "SubagentStop", .SubagentStop },
         });
         return map.get(s);
     }
@@ -26,9 +36,14 @@ pub const HookEventType = enum {
             .SessionStart => "SessionStart",
             .PreToolUse => "PreToolUse",
             .PostToolUse => "PostToolUse",
+            .PostToolUseFailure => "PostToolUseFailure",
             .Notification => "Notification",
             .Stop => "Stop",
             .UserPromptSubmit => "UserPromptSubmit",
+            .TaskCreated => "TaskCreated",
+            .TaskCompleted => "TaskCompleted",
+            .SubagentStart => "SubagentStart",
+            .SubagentStop => "SubagentStop",
         };
     }
 };

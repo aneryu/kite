@@ -109,6 +109,11 @@ pub const Server = struct {
             return;
         }
 
+        if (std.mem.eql(u8, path, "/api/v1/hooks") and head.head.method == .POST) {
+            self.handleHttpHook(&head) catch {};
+            return;
+        }
+
         if (std.mem.eql(u8, path, "/api/v1/sessions") and head.head.method == .POST) {
             self.handleCreateSession(&head) catch {};
             return;
@@ -282,6 +287,60 @@ pub const Server = struct {
         const response = std.fmt.allocPrint(self.allocator, "{{\"session_id\":{d}}}", .{session_id}) catch return;
         defer self.allocator.free(response);
         try head.respond(response, .{
+            .extra_headers = self.apiHeaders(),
+        });
+    }
+
+    fn handleHttpHook(self: *Server, head: *http.Server.Request) !void {
+        var body_buf: [8192]u8 = undefined;
+        const io_reader = head.readerExpectNone(&body_buf);
+        var body: [8192]u8 = undefined;
+        var bufs: [1][]u8 = .{&body};
+        const body_len = io_reader.readVec(&bufs) catch 0;
+        const body_slice = body[0..body_len];
+
+        const HookPayload = struct {
+            hook_event_name: []const u8 = "",
+            session_id: []const u8 = "",
+            tool_name: ?[]const u8 = null,
+        };
+        const parsed = std.json.parseFromSlice(HookPayload, self.allocator, body_slice, .{
+            .ignore_unknown_fields = true,
+        }) catch {
+            try head.respond("{\"error\":\"invalid json\"}", .{
+                .status = .bad_request,
+                .extra_headers = self.apiHeaders(),
+            });
+            return;
+        };
+        defer parsed.deinit();
+
+        const event_name = parsed.value.hook_event_name;
+        if (event_name.len == 0) {
+            try head.respond("{\"error\":\"missing hook_event_name\"}", .{
+                .status = .bad_request,
+                .extra_headers = self.apiHeaders(),
+            });
+            return;
+        }
+
+        var session_id: u64 = 1;
+        if (parsed.value.session_id.len > 0) {
+            session_id = std.fmt.parseInt(u64, parsed.value.session_id, 10) catch 1;
+        }
+
+        // Broadcast hook event to WebSocket clients
+        const tool_name = parsed.value.tool_name orelse "";
+        const msg = protocol.encodeHookEvent(self.allocator, event_name, tool_name, body_slice, session_id) catch null;
+        if (msg) |m| {
+            defer self.allocator.free(m);
+            self.broadcaster.broadcast(m);
+        }
+
+        // Update session state
+        self.session_manager.handleHookEvent(session_id, event_name, body_slice);
+
+        try head.respond("{\"ok\":true}", .{
             .extra_headers = self.apiHeaders(),
         });
     }

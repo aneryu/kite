@@ -73,6 +73,26 @@ pub const HookEvent = struct {
     raw_json: []const u8 = "",
 };
 
+pub const TaskInfo = struct {
+    id: []const u8,
+    subject: []const u8,
+    description: []const u8 = "",
+    completed: bool = false,
+};
+
+pub const SubagentInfo = struct {
+    id: []const u8,
+    agent_type: []const u8,
+    completed: bool = false,
+    started_at: i64 = 0,
+    elapsed_ms: i64 = 0,
+};
+
+pub const ActivityInfo = struct {
+    tool_name: []const u8,
+    summary: []const u8 = "",
+};
+
 pub const Session = struct {
     id: u64,
     state: SessionState = .starting,
@@ -83,6 +103,9 @@ pub const Session = struct {
     prompt_context: ?PromptContext = null,
     command: []const u8 = "",
     cwd: []const u8 = "",
+    tasks: std.ArrayList(TaskInfo),
+    subagents: std.ArrayList(SubagentInfo),
+    current_activity: ?ActivityInfo = null,
 
     pub fn init(allocator: std.mem.Allocator, id: u64) !Session {
         return .{
@@ -91,12 +114,29 @@ pub const Session = struct {
             .hook_events = .empty,
             .allocator = allocator,
             .created_at = std.time.timestamp(),
+            .tasks = .empty,
+            .subagents = .empty,
         };
     }
 
     pub fn deinit(self: *Session) void {
         self.terminal_buffer.deinit();
         self.hook_events.deinit(self.allocator);
+        for (self.tasks.items) |task| {
+            self.allocator.free(task.id);
+            self.allocator.free(task.subject);
+            if (task.description.len > 0) self.allocator.free(task.description);
+        }
+        self.tasks.deinit(self.allocator);
+        for (self.subagents.items) |sa| {
+            self.allocator.free(sa.id);
+            self.allocator.free(sa.agent_type);
+        }
+        self.subagents.deinit(self.allocator);
+        if (self.current_activity) |act| {
+            self.allocator.free(act.tool_name);
+            if (act.summary.len > 0) self.allocator.free(act.summary);
+        }
     }
 
     pub fn appendTerminalOutput(self: *Session, data: []const u8) void {
