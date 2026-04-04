@@ -1,2 +1,4 @@
 .zig-cache
 zig-out
+web/node_modules/
+web/dist/

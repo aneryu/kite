@@ -1,0 +1,26 @@
+:root {
+  --bg: #0a0a0a;
+  --fg: #e0e0e0;
+  --accent: #4fc3f7;
+  --card-bg: #1a1a1a;
+  --border: #333;
+  --danger: #ef5350;
+  --success: #66bb6a;
+  --warn: #ffa726;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  height: 100dvh;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
