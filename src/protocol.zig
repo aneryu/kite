@@ -89,8 +89,7 @@ pub fn encodePromptRequest(allocator: std.mem.Allocator, session_id: u64, summar
         .running => "running",
         .asking => "asking",
         .waiting_permission => "waiting_permission",
-        .waiting_input => "waiting_input",
-        .idle => "idle",
+        .waiting => "waiting",
         .stopped => "stopped",
     };
 
@@ -132,8 +131,7 @@ pub fn encodeAskPromptRequest(allocator: std.mem.Allocator, session_id: u64, que
         .running => "running",
         .asking => "asking",
         .waiting_permission => "waiting_permission",
-        .waiting_input => "waiting_input",
-        .idle => "idle",
+        .waiting => "waiting",
         .stopped => "stopped",
     };
 
@@ -184,8 +182,7 @@ pub fn encodeSessionStateChange(allocator: std.mem.Allocator, session_id: u64, s
         .running => "running",
         .asking => "asking",
         .waiting_permission => "waiting_permission",
-        .waiting_input => "waiting_input",
-        .idle => "idle",
+        .waiting => "waiting",
         .stopped => "stopped",
     };
     return std.fmt.allocPrint(allocator,
@@ -325,7 +322,7 @@ test "encodePromptRequest" {
     const allocator = std.testing.allocator;
     const options = [_][]const u8{ "Yes", "No" };
     const session_mod = @import("session.zig");
-    const msg = try encodePromptRequest(allocator, 1, "Continue?", &options, session_mod.SessionState.waiting_input);
+    const msg = try encodePromptRequest(allocator, 1, "Continue?", &options, session_mod.SessionState.waiting);
     defer allocator.free(msg);
     const parsed = try std.json.parseFromSlice(struct {
         @"type": []const u8,
@@ -340,7 +337,7 @@ test "encodePromptRequest" {
 test "encodeSessionStateChange" {
     const allocator = std.testing.allocator;
     const session_mod = @import("session.zig");
-    const msg = try encodeSessionStateChange(allocator, 1, session_mod.SessionState.waiting_input);
+    const msg = try encodeSessionStateChange(allocator, 1, session_mod.SessionState.waiting);
     defer allocator.free(msg);
-    try std.testing.expect(std.mem.indexOf(u8, msg, "waiting_input") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "waiting") != null);
 }

@@ -59,8 +59,7 @@ pub const SessionState = enum {
     running,
     asking,
     waiting_permission,
-    waiting_input,
-    idle,
+    waiting,
     stopped,
 };
 
@@ -109,7 +108,7 @@ pub const Changes = struct {
 
 pub const Session = struct {
     id: u64,
-    state: SessionState = .running,
+    state: SessionState = .waiting,
     terminal_buffer: RingBuffer,
     allocator: std.mem.Allocator,
     created_at: i64,
@@ -184,7 +183,7 @@ pub const Session = struct {
 
     fn handleSessionStart(self: *Session) Changes {
         self.freePromptContext();
-        self.state = .running;
+        self.state = .waiting;
         self.setLastMessage("Session started");
         return .{ .state = true, .prompt = true, .last_message = true };
     }
@@ -286,7 +285,7 @@ pub const Session = struct {
         const parsed = std.json.parseFromSlice(StopPayload, self.allocator, raw_json, .{
             .ignore_unknown_fields = true,
         }) catch {
-            self.state = .idle;
+            self.state = .waiting;
             return .{ .state = true };
         };
         defer parsed.deinit();
@@ -303,11 +302,11 @@ pub const Session = struct {
                 .summary = summary,
                 .options = options,
             };
-            self.state = .waiting_input;
+            self.state = .waiting;
             return .{ .state = true, .prompt = true };
         }
 
-        self.state = .idle;
+        self.state = .waiting;
         return .{ .state = true };
     }
 
@@ -465,20 +464,19 @@ test "ring buffer" {
     try std.testing.expectEqual(@as(usize, 8), n2);
 }
 
-test "session init state is running" {
+test "session init state is waiting" {
     const allocator = std.testing.allocator;
     var s = try Session.init(allocator, 1);
     defer s.deinit();
-    try std.testing.expectEqual(SessionState.running, s.state);
+    try std.testing.expectEqual(SessionState.waiting, s.state);
 }
 
-test "SessionStart sets running and last_message" {
+test "SessionStart sets idle and last_message" {
     const allocator = std.testing.allocator;
     var s = try Session.init(allocator, 1);
     defer s.deinit();
-    s.state = .idle;
     const changes = s.applyEvent(.SessionStart, "{}");
-    try std.testing.expectEqual(SessionState.running, s.state);
+    try std.testing.expectEqual(SessionState.waiting, s.state);
     try std.testing.expect(changes.state);
     try std.testing.expect(changes.last_message);
     try std.testing.expectEqualStrings("Session started", s.last_message);
@@ -488,7 +486,7 @@ test "UserPromptSubmit sets running and clears prompt" {
     const allocator = std.testing.allocator;
     var s = try Session.init(allocator, 1);
     defer s.deinit();
-    s.state = .idle;
+    s.state = .waiting;
     const changes = s.applyEvent(.UserPromptSubmit, "{}");
     try std.testing.expectEqual(SessionState.running, s.state);
     try std.testing.expect(changes.state);
@@ -532,7 +530,7 @@ test "Stop sets idle" {
         \\{"stop_reason":"error"}
     );
     try std.testing.expect(changes.state);
-    try std.testing.expectEqual(SessionState.idle, s.state);
+    try std.testing.expectEqual(SessionState.waiting, s.state);
 }
 
 test "Notification sets last_message" {

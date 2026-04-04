@@ -398,7 +398,7 @@ pub const SessionManager = struct {
         if (ms.session.state == .asking) {
             should_resolve_pending = true;
             next_state = .running;
-        } else if (ms.session.state == .waiting_input) {
+        } else if (ms.session.state == .waiting) {
             should_write_to_pty = true;
             next_state = .running;
         } else {

@@ -29,7 +29,7 @@ export interface PromptInfo {
 
 export interface SessionInfo {
   id: number;
-  state: 'running' | 'asking' | 'waiting_permission' | 'waiting_input' | 'idle' | 'stopped';
+  state: 'running' | 'asking' | 'waiting_permission' | 'waiting' | 'stopped';
   command: string;
   cwd: string;
   tasks: TaskInfo[];

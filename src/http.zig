@@ -624,8 +624,7 @@ pub const Server = struct {
 fn stateString(state: @import("session.zig").SessionState) []const u8 {
     return switch (state) {
         .running => "running",
-        .idle => "idle",
-        .waiting_input => "waiting_input",
+        .waiting => "waiting",
         .asking => "asking",
         .waiting_permission => "waiting_permission",
         .stopped => "stopped",

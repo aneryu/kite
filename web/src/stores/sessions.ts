@@ -27,9 +27,9 @@ class SessionStore {
       }
       // Update prompts from server data (don't clear existing valid ones)
       for (const s of this.sessions) {
-        if (s.prompt && (s.state === 'asking' || s.state === 'waiting_input')) {
+        if (s.prompt && (s.state === 'asking' || s.state === 'waiting')) {
           this.prompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options, questions: s.prompt.questions });
-        } else if (s.state !== 'asking' && s.state !== 'waiting_input') {
+        } else if (s.state !== 'asking' && s.state !== 'waiting') {
           this.prompts.delete(s.id);
         }
       }
@@ -48,9 +48,9 @@ class SessionStore {
       // Rebuild prompts from server data; clean up stale ones
       const newPrompts = new Map<number, { summary: string; options: string[]; questions?: QuestionInfo[] }>();
       for (const s of this.sessions) {
-        if (s.prompt && (s.state === 'asking' || s.state === 'waiting_input')) {
+        if (s.prompt && (s.state === 'asking' || s.state === 'waiting')) {
           newPrompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options, questions: s.prompt.questions });
-        } else if (this.prompts.has(s.id) && (s.state === 'asking' || s.state === 'waiting_input')) {
+        } else if (this.prompts.has(s.id) && (s.state === 'asking' || s.state === 'waiting')) {
           newPrompts.set(s.id, this.prompts.get(s.id)!);
         }
       }
@@ -72,7 +72,7 @@ class SessionStore {
         }
         if (msg.state) {
           s.state = msg.state as SessionInfo['state'];
-          if (msg.state !== 'waiting_input' && msg.state !== 'asking') {
+          if (msg.state !== 'waiting' && msg.state !== 'asking') {
             this.prompts.delete(sid);
           }
           this.notify();
@@ -110,7 +110,7 @@ class SessionStore {
           this.load();
           break;
         }
-        s.state = (msg.state as SessionInfo['state']) ?? 'waiting_input';
+        s.state = (msg.state as SessionInfo['state']) ?? 'waiting';
         // Store questions as-is; summary/options only used for non-question prompts (Stop event)
         this.prompts.set(sid, {
           summary: msg.summary ?? '',
@@ -131,7 +131,7 @@ class SessionStore {
   }
 
   sorted(): SessionInfo[] {
-    const priority: Record<string, number> = { asking: 0, waiting_input: 0, waiting_permission: 0, running: 1, idle: 2 };
+    const priority: Record<string, number> = { asking: 0, waiting: 0, waiting_permission: 0, running: 1 };
     return [...this.sessions]
       .filter((s) => s.state !== 'stopped')
       .sort((a, b) => (priority[a.state] ?? 9) - (priority[b.state] ?? 9));

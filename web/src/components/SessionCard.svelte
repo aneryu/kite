@@ -11,14 +11,14 @@
   let questionInputs = $state<Record<string, string>>({});
 
   const prompt = $derived(sessionStore.prompts.get(session.id));
-  const isAsking = $derived(session.state === 'asking' || session.state === 'waiting_input');
+  const isAsking = $derived(session.state === 'asking' || session.state === 'waiting');
   const hasQuestions = $derived(prompt?.questions && prompt.questions.length > 0);
   const totalQuestions = $derived(prompt?.questions?.length ?? 0);
   const answeredCount = $derived(Object.keys(selectedAnswers).length);
   const allAnswered = $derived(totalQuestions > 0 && answeredCount >= totalQuestions);
 
   /** For AskUserQuestion (asking state with questions): track per-question selection.
-   *  For Stop-based prompts (waiting_input): send plain text. */
+   *  For Stop-based prompts (waiting): send plain text. */
   function handleOption(e: Event, opt: string, questionText?: string) {
     e.stopPropagation();
     if (session.state === 'asking' && hasQuestions && questionText) {
@@ -33,7 +33,7 @@
         selectedAnswers = {};
       }
     } else {
-      // Stop/waiting_input: send plain text option
+      // Stop/waiting: send plain text option
       console.log('[SessionCard] handleOption (text):', opt, 'session_id:', session.id);
       ws.sendPromptResponse(opt, session.id);
     }
@@ -76,7 +76,7 @@
   }
 </script>
 
-<div class="card" class:waiting={session.state === 'waiting_input' || session.state === 'asking'}>
+<div class="card" class:waiting={session.state === 'waiting' || session.state === 'asking'}>
   <div class="row">
     <div class="title-group">
       <span class="sid">#{session.id}</span>
@@ -195,10 +195,9 @@
   .title { font-weight: 600; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .status { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; }
   .status.running { background: var(--success); color: #000; }
-  .status.waiting_input { background: var(--warn); color: #000; animation: pulse 1.5s infinite; }
+  .status.waiting { background: var(--warn); color: #000; animation: pulse 1.5s infinite; }
   .status.stopped { background: var(--danger); color: #fff; }
   .status.waiting_permission { background: var(--warning, #f59e0b); color: #000; }
-  .status.idle { background: var(--accent); color: #000; }
   .status.asking { background: var(--warn); color: #000; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.5 } }
   .activity { color: var(--accent); font-size: 0.8rem; margin-top: 0.3rem; font-family: monospace; }
