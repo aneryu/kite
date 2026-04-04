@@ -462,6 +462,9 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
         defer parsed.deinit();
     } else |_| {}
 
+    // Log raw hook request for mock API replay
+    logHookRequest(allocator, event_name, rest);
+
     const msg = protocol.encodeHookEvent(allocator, event_name, tool_name, rest, session_id) catch return false;
     defer allocator.free(msg);
     broadcaster.broadcast(msg);
@@ -473,6 +476,21 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
     }
 
     return false;
+}
+
+const HOOK_LOG_PATH = "/tmp/kite-hooks.jsonl";
+
+fn logHookRequest(allocator: std.mem.Allocator, event_name: []const u8, raw_json: []const u8) void {
+    const file = std.fs.cwd().createFile(HOOK_LOG_PATH, .{ .truncate = false }) catch return;
+    defer file.close();
+    file.seekFromEnd(0) catch {};
+
+    const ts = std.time.timestamp();
+    // Write one JSONL line: {"ts":...,"event":"...","payload":...}
+    // raw_json is already valid JSON, embed it directly
+    const line = std.fmt.allocPrint(allocator, "{{\"ts\":{d},\"event\":\"{s}\",\"payload\":{s}}}\n", .{ ts, event_name, if (raw_json.len > 0) raw_json else "{}" }) catch return;
+    defer allocator.free(line);
+    file.writeAll(line) catch {};
 }
 
 /// Thread wrapper for attach handling — owns the connection lifetime.
