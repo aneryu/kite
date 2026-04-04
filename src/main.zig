@@ -567,7 +567,7 @@ fn runSetup(allocator: std.mem.Allocator) !void {
     var stdout_writer = stdout_file.writer(&stdout_buf);
     const stdout = &stdout_writer.interface;
 
-    const config = try hooks.ClaudeCodeConfig.generateHooksConfig(allocator, "kite");
+    const config = try hooks.ClaudeCodeConfig.generateHooksConfig(allocator, 7890);
     defer allocator.free(config);
 
     try stdout.print("Add the following to your Claude Code settings\n", .{});

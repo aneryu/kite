@@ -104,40 +104,24 @@ pub fn writeHookOutput(writer: anytype, output: HookOutput) !void {
 }
 
 pub const ClaudeCodeConfig = struct {
-    pub fn generateHooksConfig(allocator: std.mem.Allocator, kite_path: []const u8) ![]u8 {
+    pub fn generateHooksConfig(allocator: std.mem.Allocator, port: u16) ![]u8 {
         return std.fmt.allocPrint(allocator,
             \\{{
             \\  "hooks": {{
-            \\    "PreToolUse": [{{
-            \\      "type": "command",
-            \\      "command": "{s} hook --event PreToolUse"
-            \\    }}],
-            \\    "PostToolUse": [{{
-            \\      "type": "command",
-            \\      "command": "{s} hook --event PostToolUse",
-            \\      "timeout": 0
-            \\    }}],
-            \\    "Notification": [{{
-            \\      "type": "command",
-            \\      "command": "{s} hook --event Notification",
-            \\      "timeout": 0
-            \\    }}],
-            \\    "SessionStart": [{{
-            \\      "type": "command",
-            \\      "command": "{s} hook --event SessionStart"
-            \\    }}],
-            \\    "Stop": [{{
-            \\      "type": "command",
-            \\      "command": "{s} hook --event Stop",
-            \\      "timeout": 0
-            \\    }}],
-            \\    "UserPromptSubmit": [{{
-            \\      "type": "command",
-            \\      "command": "{s} hook --event UserPromptSubmit"
-            \\    }}]
+            \\    "PreToolUse": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "PostToolUse": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "PostToolUseFailure": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "TaskCreated": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "TaskCompleted": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "SubagentStart": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "SubagentStop": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "UserPromptSubmit": [{{"hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "Notification": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "Stop": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}],
+            \\    "SessionStart": [{{"matcher": "*", "hooks": [{{"type": "http", "url": "http://localhost:{d}/api/v1/hooks"}}]}}]
             \\  }}
             \\}}
-        , .{ kite_path, kite_path, kite_path, kite_path, kite_path, kite_path });
+        , .{ port, port, port, port, port, port, port, port, port, port, port });
     }
 };
 
