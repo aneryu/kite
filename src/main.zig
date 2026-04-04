@@ -557,12 +557,7 @@ fn handleDataChannelMessage(
     } else if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
         const session_id = msg.session_id orelse 1;
         if (msg.data) |data| {
-            // Data is base64-encoded from the browser
-            const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(data) catch return;
-            const decoded = allocator.alloc(u8, decoded_len) catch return;
-            defer allocator.free(decoded);
-            std.base64.standard.Decoder.decode(decoded, data) catch return;
-            session_manager.writeToSession(session_id, decoded) catch {};
+            session_manager.writeToSession(session_id, data) catch {};
         }
     } else if (std.mem.eql(u8, msg.@"type", "resize")) {
         const session_id = msg.session_id orelse 1;
