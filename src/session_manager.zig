@@ -45,6 +45,8 @@ pub const SessionManager = struct {
             const ms = ms_ptr.*;
             ms.running.store(false, .release);
             ms.pty.close();
+            if (ms.session.command.len > 0) self.allocator.free(ms.session.command);
+            if (ms.session.cwd.len > 0) self.allocator.free(ms.session.cwd);
             ms.session.deinit();
             self.allocator.destroy(ms);
         }
@@ -70,8 +72,8 @@ pub const SessionManager = struct {
             .pty = try Pty.open(),
         };
         ms.session.state = .starting;
-        ms.session.command = opts.command;
-        ms.session.cwd = opts.cwd;
+        ms.session.command = try self.allocator.dupe(u8, opts.command);
+        ms.session.cwd = try self.allocator.dupe(u8, opts.cwd);
 
         // Set PTY window size BEFORE spawn so the child sees correct dimensions
         ms.pty.setWindowSize(opts.rows, opts.cols);
@@ -100,6 +102,8 @@ pub const SessionManager = struct {
 
         ms.running.store(false, .release);
         ms.pty.close();
+        if (ms.session.command.len > 0) self.allocator.free(ms.session.command);
+        if (ms.session.cwd.len > 0) self.allocator.free(ms.session.cwd);
         ms.session.deinit();
         self.allocator.destroy(ms);
     }
