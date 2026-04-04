@@ -85,6 +85,11 @@ pub const Server = struct {
             return;
         }
 
+        if (std.mem.startsWith(u8, path, "/api/sessions/") and std.mem.endsWith(u8, path, "/terminal")) {
+            self.handleTerminalSnapshot(&head, path) catch {};
+            return;
+        }
+
         if (std.mem.startsWith(u8, path, "/api/sessions")) {
             self.handleSessionsApi(&head) catch {};
             return;
@@ -316,6 +321,51 @@ pub const Server = struct {
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }},
             });
         }
+    }
+
+    fn handleTerminalSnapshot(self: *Server, head: *http.Server.Request, path: []const u8) !void {
+        // Extract session ID from /api/sessions/<id>/terminal
+        const prefix = "/api/sessions/";
+        const suffix = "/terminal";
+        if (path.len <= prefix.len + suffix.len) {
+            try head.respond("{\"error\":\"invalid path\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            return;
+        }
+        const id_str = path[prefix.len .. path.len - suffix.len];
+        const session_id = std.fmt.parseInt(u64, id_str, 10) catch {
+            try head.respond("{\"error\":\"invalid session id\"}", .{ .status = .bad_request, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            return;
+        };
+
+        const session = self.session_manager.getSession(session_id) orelse {
+            try head.respond("{\"error\":\"session not found\"}", .{ .status = .not_found, .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            return;
+        };
+
+        // Get terminal buffer contents and base64 encode
+        const slice = session.terminal_buffer.slice();
+        const total_len = slice.first.len + slice.second.len;
+
+        if (total_len == 0) {
+            try head.respond("{\"data\":\"\"}", .{ .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
+            return;
+        }
+
+        // Combine the two parts of the ring buffer
+        const combined = try self.allocator.alloc(u8, total_len);
+        defer self.allocator.free(combined);
+        @memcpy(combined[0..slice.first.len], slice.first);
+        @memcpy(combined[slice.first.len..], slice.second);
+
+        // Base64 encode
+        const b64_len = std.base64.standard.Encoder.calcSize(total_len);
+        const b64 = try self.allocator.alloc(u8, b64_len);
+        defer self.allocator.free(b64);
+        const encoded = std.base64.standard.Encoder.encode(b64, combined);
+
+        const response = try std.fmt.allocPrint(self.allocator, "{{\"data\":\"{s}\",\"session_id\":{d}}}", .{ encoded, session_id });
+        defer self.allocator.free(response);
+        try head.respond(response, .{ .extra_headers = &.{.{ .name = "Content-Type", .value = "application/json" }} });
     }
 
     fn serveStaticFile(_: *Server, head: *http.Server.Request, path: []const u8) !void {

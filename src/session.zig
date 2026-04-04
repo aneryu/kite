@@ -6,7 +6,7 @@ pub const RingBuffer = struct {
     len: usize = 0,
     allocator: std.mem.Allocator,
 
-    pub const default_capacity = 64 * 1024; // 64KB
+    pub const default_capacity = 256 * 1024; // 256KB
 
     pub fn init(allocator: std.mem.Allocator, capacity: usize) !RingBuffer {
         return .{
