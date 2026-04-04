@@ -64,6 +64,9 @@ pub const index_html =
     \\#terminal-view{flex:1;display:none;flex-direction:column;min-height:0}
     \\#terminal-container{flex:1;min-height:0;padding:4px}
     \\#terminal-container .xterm{height:100%}
+    \\.shortcut-bar{display:flex;gap:4px;padding:4px 6px;background:var(--card-bg);border-top:1px solid var(--border);flex-shrink:0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+    \\.shortcut-bar button{flex-shrink:0;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--fg);font-size:.75rem;font-family:'Hack Nerd Font Mono',monospace;cursor:pointer;-webkit-tap-highlight-color:transparent}
+    \\.shortcut-bar button:active{background:var(--accent);color:#000}
     \\#events-view{flex:1;overflow-y:auto;padding:.5rem;display:none;-webkit-overflow-scrolling:touch}
     \\.event-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.75rem;margin-bottom:.5rem}
     \\.event-card .event-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.25rem}
@@ -134,7 +137,19 @@ pub const index_html =
     \\        <button class="expand-btn" onclick="switchTab('terminal')">Show full terminal</button>
     \\      </div>
     \\    </div>
-    \\    <div id="terminal-view"><div id="terminal-container"></div></div>
+    \\    <div id="terminal-view">
+    \\      <div id="terminal-container"></div>
+    \\      <div class="shortcut-bar">
+    \\        <button onclick="sendKey('\x03')">Ctrl+C</button>
+    \\        <button onclick="sendKey('\x09')">Tab</button>
+    \\        <button onclick="sendKey('\x1b[A')">Up</button>
+    \\        <button onclick="sendKey('\x1b[B')">Down</button>
+    \\        <button onclick="sendKey('\x1b')">Esc</button>
+    \\        <button onclick="sendKey('\x01')">Home</button>
+    \\        <button onclick="sendKey('\x05')">End</button>
+    \\        <button onclick="doPaste()">Paste</button>
+    \\      </div>
+    \\    </div>
     \\    <div id="events-view"></div>
     \\  </div>
     \\</div>
@@ -191,9 +206,34 @@ pub const index_html =
     \\function connectWs(){
     \\  var proto=location.protocol==='https:'?'wss:':'ws:';
     \\  ws=new WebSocket(proto+'//'+location.host+'/ws');ws.binaryType='arraybuffer';
-    \\  ws.onopen=function(){ws.send(JSON.stringify({type:'auth_token',token:sessionToken}));};
+    \\  ws.onopen=function(){
+    \\    ws.send(JSON.stringify({type:'auth_token',token:sessionToken}));
+    \\    // Restore terminal state on reconnect
+    \\    if(activeId)restoreTerminal(activeId);
+    \\  };
     \\  ws.onmessage=function(e){try{handleMsg(JSON.parse(e.data))}catch(err){console.error(err)}};
     \\  ws.onclose=function(){setTimeout(connectWs,2000)};
+    \\}
+    \\function restoreTerminal(sid){
+    \\  fetch('/api/sessions/'+sid+'/terminal').then(function(r){return r.json()}).then(function(d){
+    \\    if(d.data&&term){
+    \\      var bin=atob(d.data);var bytes=new Uint8Array(bin.length);
+    \\      for(var j=0;j<bin.length;j++)bytes[j]=bin.charCodeAt(j);
+    \\      term.reset();term.write(bytes);term.refresh(0,term.rows-1);
+    \\    }
+    \\  }).catch(function(){});
+    \\}
+    \\function sendKey(seq){
+    \\  if(ws&&ws.readyState===1&&activeId)ws.send(JSON.stringify({type:'terminal_input',data:seq,session_id:activeId}));
+    \\  if(term)term.focus();
+    \\}
+    \\function doPaste(){
+    \\  if(navigator.clipboard&&navigator.clipboard.readText){
+    \\    navigator.clipboard.readText().then(function(text){
+    \\      if(text&&ws&&ws.readyState===1&&activeId)ws.send(JSON.stringify({type:'terminal_input',data:text,session_id:activeId}));
+    \\      if(term)term.focus();
+    \\    }).catch(function(){});
+    \\  }
     \\}
     \\function fetchSessions(){
     \\  fetch('/api/sessions').then(function(r){return r.json()}).then(function(list){
@@ -280,8 +320,9 @@ pub const index_html =
     \\  document.getElementById('event-badge').style.display='none';
     \\  s.events.forEach(function(ev){addEventCard(ev)});
     \\  if(s.events.length>0){document.getElementById('event-badge').style.display='inline';document.getElementById('event-badge').textContent=s.events.length;}
-    \\  // Reset terminal for this session
+    \\  // Restore terminal content for this session
     \\  term.reset();
+    \\  restoreTerminal(id);
     \\  // Check if prompt is pending
     \\  if(s.state==='waiting_input'&&s.prompt)showPrompt(s.prompt);
     \\  else document.getElementById('prompt-section').style.display='none';
