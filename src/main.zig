@@ -147,9 +147,12 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try stdout.print("  Press Ctrl+C to stop the daemon.\n", .{});
     try stdout.flush();
 
-    // Block until stdin closes or Ctrl+C
+    // Block until stdin closes (pipe EOF) or Ctrl+C (SIGINT)
     var sig_buf: [1]u8 = undefined;
-    _ = posix.read(posix.STDIN_FILENO, &sig_buf) catch {};
+    while (true) {
+        const n = posix.read(posix.STDIN_FILENO, &sig_buf) catch break;
+        if (n == 0) break; // EOF — stdin closed
+    }
 
     http_server.stop();
 }
