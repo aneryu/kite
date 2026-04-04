@@ -49,7 +49,7 @@ func NewRoomManager() *RoomManager {
 	return &RoomManager{
 		rooms:           make(map[string]*Room),
 		roomTTL:         10 * time.Minute,
-		maxJoinAttempts: 10,
+		maxJoinAttempts: 30,
 		joinAttempts:    make(map[string]*rateLimitEntry),
 	}
 }
@@ -94,6 +94,9 @@ func (rm *RoomManager) Join(code string, browser Sender, ip string) error {
 	room.Browser = browser
 	room.Locked = true
 	room.LastActive = time.Now()
+
+	// Clear rate limit on successful join
+	delete(rm.joinAttempts, ip)
 
 	// Notify daemon that browser joined
 	room.Daemon.Send([]byte(`{"type":"peer_joined"}`))
