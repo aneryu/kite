@@ -75,7 +75,9 @@ WebRTC 成为唯一的远程通信通道，现有的 HTTP server 和 WebSocket s
 
 ### 重连认证
 
-浏览器已有 session_token 时，跳过扫码配对，直接发送 `{ type: "auth", session_token: "..." }` 认证后开始 WebRTC 握手。
+浏览器已有 session_token 时，跳过扫码配对。浏览器同时在 localStorage 保存 pairing_code，重连时用它加入同一房间，然后发送 `{ type: "auth", session_token: "..." }` 认证后开始 WebRTC 握手。
+
+如果 daemon 已重启（pairing_code 变了），房间不存在，信令服务器返回错误，浏览器清除本地状态，回到"请扫码或输入配对码"界面。
 
 ## 协议与消息格式
 
