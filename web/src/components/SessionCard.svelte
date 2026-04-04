@@ -1,7 +1,33 @@
 <script lang="ts">
   import type { SessionInfo } from '../lib/types';
+  import { sessionStore } from '../stores/sessions';
+  import { ws } from '../lib/ws';
 
   let { session, onclick }: { session: SessionInfo; onclick: () => void } = $props();
+  let inputText = $state('');
+
+  const prompt = $derived(sessionStore.prompts.get(session.id));
+  const isAsking = $derived(session.state === 'asking' || session.state === 'waiting_input');
+
+  function handleOption(e: Event, opt: string) {
+    e.stopPropagation();
+    ws.sendPromptResponse(opt, session.id);
+  }
+
+  function handleSubmit(e: Event) {
+    e.stopPropagation();
+    if (inputText.trim()) {
+      ws.sendPromptResponse(inputText.trim(), session.id);
+      inputText = '';
+    }
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); handleSubmit(e); }
+  }
+
+  function handleInputClick(e: Event) { e.stopPropagation(); }
 
   const completedTasks = $derived(session.tasks.filter((t) => t.completed).length);
   const pendingTasks = $derived(session.tasks.length - completedTasks);
@@ -52,6 +78,25 @@
       {/if}
     </div>
   {/if}
+
+  {#if isAsking && prompt}
+    <div class="prompt-section">
+      {#if prompt.summary}
+        <div class="prompt-summary">{prompt.summary}</div>
+      {/if}
+      {#if prompt.options.length > 0}
+        <div class="prompt-options">
+          {#each prompt.options as opt}
+            <button class="prompt-opt" onclick={(e) => handleOption(e, opt)}>{opt}</button>
+          {/each}
+        </div>
+      {/if}
+      <div class="prompt-input">
+        <input type="text" bind:value={inputText} onkeydown={handleKeydown} onclick={handleInputClick} placeholder="Type a response..." />
+        <button class="prompt-send" onclick={handleSubmit}>Send</button>
+      </div>
+    </div>
+  {/if}
 </button>
 
 <style>
@@ -82,4 +127,14 @@
   .text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .elapsed { color: #888; font-size: 0.7rem; flex-shrink: 0; }
   .more { color: #666; font-size: 0.75rem; padding-left: 1.2rem; }
+
+  .prompt-section { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 2px solid var(--warn); }
+  .prompt-summary { font-size: 0.8rem; color: #ccc; margin-bottom: 0.4rem; max-height: 2.5rem; overflow: hidden; text-overflow: ellipsis; white-space: pre-wrap; word-break: break-word; }
+  .prompt-options { display: flex; gap: 0.4rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
+  .prompt-opt { padding: 0.3rem 0.8rem; border: 1px solid var(--accent); border-radius: 16px; background: transparent; color: var(--accent); font-size: 0.8rem; cursor: pointer; }
+  .prompt-opt:active { background: var(--accent); color: #000; }
+  .prompt-input { display: flex; gap: 0.4rem; }
+  .prompt-input input { flex: 1; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font-size: 0.8rem; }
+  .prompt-input input:focus { outline: none; border-color: var(--accent); }
+  .prompt-send { padding: 0.4rem 0.7rem; border: none; border-radius: 6px; background: var(--accent); color: #000; font-weight: 600; font-size: 0.8rem; cursor: pointer; }
 </style>
