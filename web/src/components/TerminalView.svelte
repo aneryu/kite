@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { Terminal } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
+  import { Unicode11Addon } from '@xterm/addon-unicode11';
   import '@xterm/xterm/css/xterm.css';
   import { ws } from '../lib/ws';
   import { fetchTerminalSnapshot } from '../lib/api';
@@ -24,6 +25,9 @@
     });
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
+    const unicode11 = new Unicode11Addon();
+    terminal.loadAddon(unicode11);
+    terminal.unicode.activeVersion = '11';
     terminal.open(containerEl);
     fitAddon.fit();
     ws.sendResize(terminal.cols, terminal.rows, sessionId);
