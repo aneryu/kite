@@ -3,7 +3,7 @@
   import { sessionStore } from '../stores/sessions';
   import { ws } from '../lib/ws';
 
-  let { session, onclick }: { session: SessionInfo; onclick: () => void } = $props();
+  let { session, onterminal }: { session: SessionInfo; onterminal: () => void } = $props();
   let inputText = $state('');
 
   const prompt = $derived(sessionStore.prompts.get(session.id));
@@ -38,10 +38,13 @@
   }
 </script>
 
-<button class="card" class:waiting={session.state === 'waiting_input' || session.state === 'asking'} {onclick}>
+<div class="card" class:waiting={session.state === 'waiting_input' || session.state === 'asking'}>
   <div class="row">
     <span class="title">{session.cwd.split('/').pop() || session.command}</span>
-    <span class="status {session.state}">{session.state.replace('_', ' ')}</span>
+    <div class="row-right">
+      <span class="status {session.state}">{session.state.replace('_', ' ')}</span>
+      <button class="terminal-btn" onclick={onterminal}>Terminal</button>
+    </div>
   </div>
 
   {#if session.activity}
@@ -97,18 +100,24 @@
       </div>
     </div>
   {/if}
-</button>
+</div>
 
 <style>
   .card {
     display: block; width: 100%; text-align: left;
     background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
-    padding: 0.85rem 1rem; cursor: pointer; transition: border-color 0.15s;
+    padding: 0.85rem 1rem; transition: border-color 0.15s;
     color: var(--fg); font-family: inherit; font-size: inherit;
   }
-  .card:active { border-color: var(--accent); }
   .card.waiting { border-color: var(--warn); }
   .row { display: flex; justify-content: space-between; align-items: center; }
+  .row-right { display: flex; align-items: center; gap: 0.4rem; }
+  .terminal-btn {
+    padding: 0.2rem 0.6rem; border: 1px solid var(--accent); border-radius: 6px;
+    background: transparent; color: var(--accent); font-size: 0.7rem; cursor: pointer;
+    font-family: monospace;
+  }
+  .terminal-btn:active { background: var(--accent); color: #000; }
   .title { font-weight: 600; font-size: 0.85rem; }
   .status { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; }
   .status.running { background: var(--success); color: #000; }

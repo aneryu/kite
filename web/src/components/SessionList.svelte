@@ -21,7 +21,7 @@
 
 <div class="list">
   {#each sessions as session (session.id)}
-    <SessionCard {session} onclick={() => onselect(session.id)} />
+    <SessionCard {session} onterminal={() => onselect(session.id)} />
   {/each}
   {#if sessions.length === 0}
     <p class="empty">No sessions. Create one with <code>kite run</code> or tap +</p>
