@@ -246,7 +246,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             defer state_queue.freeBatch(state_msgs);
             for (state_msgs) |msg| {
                 logStderr("[kite-loop] state msg: {s}", .{msg[0..@min(msg.len, 200)]});
-                handleRtcStateMessage(allocator, msg, &signal_client, &session_manager, &auth);
+                handleRtcStateMessage(allocator, msg, &signal_client);
             }
         }
 
@@ -376,8 +376,6 @@ fn handleRtcStateMessage(
     allocator: std.mem.Allocator,
     raw: []const u8,
     signal_client: *SignalClient,
-    session_manager: *SessionManager,
-    auth: *Auth,
 ) void {
     const parsed = std.json.parseFromSlice(struct {
         @"type": []const u8,
@@ -423,8 +421,7 @@ fn handleRtcStateMessage(
         logStderr("[kite-rtc] State change: {s}", .{msg.state orelse "unknown"});
     } else if (std.mem.eql(u8, msg.@"type", "dc_open")) {
         logStderr("[kite-rtc] DataChannel opened!", .{});
-        // Send sessions_sync to browser
-        sendSessionsSync(allocator, session_manager, auth);
+        // Don't send sessions_sync here — wait until auth succeeds
     }
 }
 
@@ -556,7 +553,7 @@ fn handleDataChannelMessage(
 
     if (std.mem.eql(u8, msg.@"type", "auth")) {
         logStderr("[kite-dc] Handling auth message (has token={})", .{msg.token != null});
-        handleAuthMessage(allocator, msg, auth);
+        handleAuthMessage(allocator, msg, auth, session_manager);
     } else if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
         const session_id = msg.session_id orelse 1;
         if (msg.data) |data| {
@@ -593,7 +590,7 @@ fn handleDataChannelMessage(
     }
 }
 
-fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, auth: *Auth) void {
+fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, auth: *Auth, session_manager: *SessionManager) void {
     if (auth.disabled) {
         const result = protocol.encodeAuthResult(allocator, true, "") catch return;
         defer allocator.free(result);
@@ -614,23 +611,14 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
 
     // Try as setup token first (exchange for session token)
     if (auth.validateSetupToken(token)) |session_token_hex| {
-        logStderr("[kite-auth] Setup token valid, generating auth_result", .{});
-        const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch |err| {
-            logStderr("[kite-auth] encodeAuthResult failed: {}", .{err});
-            return;
-        };
+        logStderr("[kite-auth] Setup token valid, sending session token", .{});
+        const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch return;
         defer allocator.free(result);
-        logStderr("[kite-auth] auth_result encoded ({d} bytes): {s}", .{ result.len, result[0..@min(result.len, 80)] });
         if (global_rtc_peer) |peer| {
-            logStderr("[kite-auth] Sending via DC (dc={d})", .{peer.dc});
-            peer.send(result) catch |err| {
-                logStderr("[kite-auth] send FAILED: {}", .{err});
-                return;
-            };
-            logStderr("[kite-auth] auth_result SENT successfully", .{});
-        } else {
-            logStderr("[kite-auth] WARNING: no rtc_peer!", .{});
+            peer.send(result) catch {};
         }
+        // Send sessions_sync after successful auth
+        sendSessionsSync(allocator, session_manager, auth);
         return;
     }
 
@@ -640,10 +628,10 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         const result = protocol.encodeAuthResult(allocator, true, token) catch return;
         defer allocator.free(result);
         if (global_rtc_peer) |peer| {
-            peer.send(result) catch |err| {
-                logStderr("[kite-auth] Failed to send auth_result: {}", .{err});
-            };
+            peer.send(result) catch {};
         }
+        // Send sessions_sync after successful auth
+        sendSessionsSync(allocator, session_manager, auth);
         return;
     }
 
