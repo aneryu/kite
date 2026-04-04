@@ -40,13 +40,26 @@ class SessionStore {
     const sid = msg.session_id;
     if (!sid) return;
 
+    // Auto-create session entry if we receive a message for an unknown session
+    if (!this.getSession(sid) && msg.type !== 'sessions_sync') {
+      this.sessions.push({
+        id: sid,
+        state: 'running',
+        command: '',
+        cwd: '',
+        tasks: [],
+        subagents: [],
+        activity: null,
+        prompt: null,
+        last_message: null,
+      });
+      this.notify();
+    }
+
     switch (msg.type) {
       case 'session_state_change': {
         const s = this.getSession(sid);
-        if (!s) {
-          // Unknown session — no HTTP API to fetch from, just break
-          break;
-        }
+        if (!s) break;
         if (msg.state) {
           s.state = msg.state as SessionInfo['state'];
           if (msg.state !== 'waiting' && msg.state !== 'asking') {
