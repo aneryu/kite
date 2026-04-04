@@ -113,6 +113,7 @@ pub const Server = struct {
         var ws = try head.respondWebSocket(.{ .key = ws_key });
 
         var client = ws_mod.WsClient{ .ws = ws };
+        if (self.auth.disabled) client.authenticated = true;
         try self.broadcaster.addClient(&client);
         defer self.broadcaster.removeClient(&client);
 

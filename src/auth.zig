@@ -7,8 +7,11 @@ pub const Auth = struct {
     session_token: ?[64]u8 = null,
     setup_token_used: bool = false,
     setup_token_created: i64,
+    session_token_created: i64 = 0,
+    disabled: bool = false,
 
     const setup_token_ttl = 300; // 5 minutes
+    const session_token_ttl = 86400; // 24 hours
 
     pub fn init() Auth {
         var secret: [32]u8 = undefined;
@@ -43,15 +46,28 @@ pub const Auth = struct {
         var session_bytes: [64]u8 = undefined;
         crypto.random.bytes(&session_bytes);
         self.session_token = session_bytes;
+        self.session_token_created = std.time.timestamp();
         return std.fmt.bytesToHex(session_bytes, .lower);
     }
 
     pub fn validateSessionToken(self: *const Auth, token_hex: []const u8) bool {
+        if (self.disabled) return true;
         if (self.session_token) |session| {
+            if (std.time.timestamp() - self.session_token_created > session_token_ttl) return false;
             const expected = std.fmt.bytesToHex(session, .lower);
             return std.mem.eql(u8, token_hex, &expected);
         }
         return false;
+    }
+
+    pub fn refreshSessionToken(self: *Auth) ?[128]u8 {
+        if (self.session_token == null) return null;
+        // Generate new token
+        var new_bytes: [64]u8 = undefined;
+        crypto.random.bytes(&new_bytes);
+        self.session_token = new_bytes;
+        self.session_token_created = std.time.timestamp();
+        return std.fmt.bytesToHex(new_bytes, .lower);
     }
 };
 

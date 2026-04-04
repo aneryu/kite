@@ -16,6 +16,8 @@ const Config = struct {
     bind: []const u8 = "0.0.0.0",
     command: []const u8 = "claude",
     attach_id: ?u64 = null,
+    static_dir: ?[]const u8 = null,
+    no_auth: bool = false,
 };
 
 const Command = enum {
@@ -80,6 +82,11 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         } else if (std.mem.eql(u8, args[i], "--bind") and i + 1 < args.len) {
             config.bind = args[i + 1];
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--static-dir") and i + 1 < args.len) {
+            config.static_dir = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--no-auth")) {
+            config.no_auth = true;
         }
     }
 
@@ -98,6 +105,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stdout = &stdout_writer.interface;
 
     var auth = Auth.init();
+    auth.disabled = config.no_auth;
     const setup_hex = auth.getSetupTokenHex();
 
     try stdout.print("\n  kite daemon started\n", .{});
@@ -124,6 +132,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         &broadcaster,
         &session_manager,
     );
+    http_server.static_dir = config.static_dir;
     const server_thread = try std.Thread.spawn(.{}, HttpServer.run, .{&http_server});
     _ = server_thread;
 
@@ -593,8 +602,10 @@ fn printUsage() void {
         \\  kite help               Show this help
         \\
         \\Options for 'start':
-        \\  --port <PORT>   Server port (default: 7890)
-        \\  --bind <ADDR>   Bind address (default: 0.0.0.0)
+        \\  --port <PORT>          Server port (default: 7890)
+        \\  --bind <ADDR>          Bind address (default: 0.0.0.0)
+        \\  --static-dir <DIR>     Serve static files from directory
+        \\  --no-auth              Disable authentication (development only)
         \\
         \\Options for 'run':
         \\  --cmd <CMD>       Command to run (default: claude)
