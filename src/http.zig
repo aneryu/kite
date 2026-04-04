@@ -1,7 +1,6 @@
 const std = @import("std");
 const http = std.http;
 const net = std.net;
-const web = @import("web.zig");
 const auth_mod = @import("auth.zig");
 const protocol = @import("protocol.zig");
 const ws_mod = @import("ws.zig");
@@ -93,10 +92,10 @@ pub const Server = struct {
         const path = head.head.target;
 
         if (self.cors_enabled and head.head.method == .OPTIONS) {
-            try head.respond("", .{
+            head.respond("", .{
                 .status = .no_content,
                 .extra_headers = &cors_preflight_headers,
-            });
+            }) catch {};
             return;
         }
 
@@ -440,53 +439,73 @@ pub const Server = struct {
     }
 
     fn serveStaticFile(self: *Server, head: *http.Server.Request, path: []const u8) !void {
+        const dir = self.static_dir orelse {
+            try head.respond("{\"error\":\"not found\"}", .{
+                .status = .not_found,
+                .extra_headers = self.apiHeaders(),
+            });
+            return;
+        };
+
         const serve_path = if (std.mem.eql(u8, path, "/")) "index.html" else if (path.len > 1) path[1..] else path;
 
-        // Try external static directory first
-        if (self.static_dir) |dir| {
-            var path_buf: [1024]u8 = undefined;
-            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, serve_path }) catch {
-                try head.respond(web.index_html, .{
-                    .extra_headers = &.{.{ .name = "Content-Type", .value = "text/html; charset=utf-8" }},
-                });
+        var path_buf: [1024]u8 = undefined;
+        const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, serve_path }) catch {
+            try head.respond("Not Found", .{ .status = .not_found });
+            return;
+        };
+
+        const file = std.fs.openFileAbsolute(full_path, .{}) catch {
+            // SPA fallback: serve index.html for unknown paths
+            var index_buf: [1024]u8 = undefined;
+            const index_path = std.fmt.bufPrint(&index_buf, "{s}/index.html", .{dir}) catch {
+                try head.respond("Not Found", .{ .status = .not_found });
                 return;
             };
-            const file = std.fs.openFileAbsolute(full_path, .{}) catch {
-                // Fall back to embedded
-                if (std.mem.eql(u8, serve_path, "index.html")) {
-                    try head.respond(web.index_html, .{
-                        .extra_headers = &.{.{ .name = "Content-Type", .value = "text/html; charset=utf-8" }},
-                    });
-                } else {
-                    try head.respond("Not Found", .{ .status = .not_found });
-                }
+            const index_file = std.fs.openFileAbsolute(index_path, .{}) catch {
+                try head.respond("Not Found", .{ .status = .not_found });
                 return;
             };
-            defer file.close();
+            defer index_file.close();
 
             var buf: [65536]u8 = undefined;
-            const n = file.readAll(&buf) catch {
+            const n = index_file.readAll(&buf) catch {
                 try head.respond("Read Error", .{ .status = .internal_server_error });
                 return;
             };
-
-            // Determine content type
-            const content_type = if (std.mem.endsWith(u8, serve_path, ".html")) "text/html; charset=utf-8" else if (std.mem.endsWith(u8, serve_path, ".js")) "application/javascript" else if (std.mem.endsWith(u8, serve_path, ".css")) "text/css" else if (std.mem.endsWith(u8, serve_path, ".json")) "application/json" else "application/octet-stream";
-
             try head.respond(buf[0..n], .{
-                .extra_headers = &.{.{ .name = "Content-Type", .value = content_type }},
-            });
-            return;
-        }
-
-        // Fallback to embedded HTML
-        if (std.mem.eql(u8, serve_path, "index.html")) {
-            try head.respond(web.index_html, .{
                 .extra_headers = &.{.{ .name = "Content-Type", .value = "text/html; charset=utf-8" }},
             });
-        } else {
-            try head.respond("Not Found", .{ .status = .not_found });
-        }
+            return;
+        };
+        defer file.close();
+
+        var buf: [65536]u8 = undefined;
+        const n = file.readAll(&buf) catch {
+            try head.respond("Read Error", .{ .status = .internal_server_error });
+            return;
+        };
+
+        const content_type = if (std.mem.endsWith(u8, serve_path, ".html"))
+            "text/html; charset=utf-8"
+        else if (std.mem.endsWith(u8, serve_path, ".js"))
+            "application/javascript"
+        else if (std.mem.endsWith(u8, serve_path, ".css"))
+            "text/css"
+        else if (std.mem.endsWith(u8, serve_path, ".json"))
+            "application/json"
+        else if (std.mem.endsWith(u8, serve_path, ".svg"))
+            "image/svg+xml"
+        else if (std.mem.endsWith(u8, serve_path, ".png"))
+            "image/png"
+        else if (std.mem.endsWith(u8, serve_path, ".ico"))
+            "image/x-icon"
+        else
+            "application/octet-stream";
+
+        try head.respond(buf[0..n], .{
+            .extra_headers = &.{.{ .name = "Content-Type", .value = content_type }},
+        });
     }
 
     pub fn stop(self: *Server) void {
