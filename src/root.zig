@@ -1,6 +1,7 @@
 pub const Pty = @import("pty.zig").Pty;
 pub const Session = @import("session.zig").Session;
 pub const RingBuffer = @import("session.zig").RingBuffer;
+pub const SessionState = @import("session.zig").SessionState;
 pub const Auth = @import("auth.zig").Auth;
 pub const Server = @import("http.zig").Server;
 pub const WsBroadcaster = @import("ws.zig").WsBroadcaster;
