@@ -54,8 +54,14 @@ pub const RingBuffer = struct {
 pub const SessionState = enum {
     starting,
     running,
-    waiting_approval,
+    waiting_input,
     stopped,
+};
+
+pub const PromptContext = struct {
+    summary: []const u8,
+    options: []const []const u8,
+    raw_json: []const u8 = "",
 };
 
 pub const HookEvent = struct {
@@ -74,6 +80,9 @@ pub const Session = struct {
     hook_events: std.ArrayList(HookEvent),
     allocator: std.mem.Allocator,
     created_at: i64,
+    prompt_context: ?PromptContext = null,
+    command: []const u8 = "",
+    cwd: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator, id: u64) !Session {
         return .{
@@ -97,7 +106,40 @@ pub const Session = struct {
     pub fn addHookEvent(self: *Session, event: HookEvent) !void {
         try self.hook_events.append(self.allocator, event);
     }
+
+    pub fn setWaitingInput(self: *Session, summary: []const u8, options: []const []const u8) void {
+        self.state = .waiting_input;
+        self.prompt_context = .{
+            .summary = summary,
+            .options = options,
+        };
+    }
+
+    pub fn clearPromptContext(self: *Session) void {
+        self.state = .running;
+        self.prompt_context = null;
+    }
 };
+
+test "session state transitions" {
+    const allocator = std.testing.allocator;
+    var s = try Session.init(allocator, 1);
+    defer s.deinit();
+
+    try std.testing.expectEqual(SessionState.starting, s.state);
+
+    s.state = .running;
+    try std.testing.expectEqual(SessionState.running, s.state);
+
+    s.setWaitingInput("What would you like to do?", &.{ "Continue", "Stop" });
+    try std.testing.expectEqual(SessionState.waiting_input, s.state);
+    try std.testing.expectEqualStrings("What would you like to do?", s.prompt_context.?.summary);
+    try std.testing.expectEqual(@as(usize, 2), s.prompt_context.?.options.len);
+
+    s.clearPromptContext();
+    try std.testing.expectEqual(SessionState.running, s.state);
+    try std.testing.expect(s.prompt_context == null);
+}
 
 test "ring buffer" {
     const allocator = std.testing.allocator;
