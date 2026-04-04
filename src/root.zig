@@ -8,6 +8,7 @@ pub const WsClient = @import("ws.zig").WsClient;
 pub const hooks = @import("hooks.zig");
 pub const protocol = @import("protocol.zig");
 pub const daemon = @import("daemon.zig");
+pub const prompt_parser = @import("prompt_parser.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
