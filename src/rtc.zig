@@ -120,11 +120,13 @@ pub const RtcPeer = struct {
 
     fn onLocalDescription(_: c_int, sdp_raw: [*c]const u8, type_raw: [*c]const u8, ptr: ?*anyopaque) callconv(.C) void {
         const self = peerFromPtr(ptr) orelse return;
-        const sdp = std.mem.span(sdp_raw);
-        const sdp_type = std.mem.span(type_raw);
+        const sdp_esc = jsonEscapeAlloc(self.allocator, std.mem.span(sdp_raw)) catch return;
+        defer self.allocator.free(sdp_esc);
+        const type_esc = jsonEscapeAlloc(self.allocator, std.mem.span(type_raw)) catch return;
+        defer self.allocator.free(type_esc);
         const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"local_description\",\"sdp\":\"{s}\",\"sdp_type\":\"{s}\"}}", .{
-            jsonEscape(sdp),
-            jsonEscape(sdp_type),
+            sdp_esc,
+            type_esc,
         }) catch return;
         defer self.allocator.free(msg);
         self.state_queue.push(msg) catch return;
@@ -132,11 +134,13 @@ pub const RtcPeer = struct {
 
     fn onLocalCandidate(_: c_int, cand_raw: [*c]const u8, mid_raw: [*c]const u8, ptr: ?*anyopaque) callconv(.C) void {
         const self = peerFromPtr(ptr) orelse return;
-        const candidate = std.mem.span(cand_raw);
-        const mid = std.mem.span(mid_raw);
+        const cand_esc = jsonEscapeAlloc(self.allocator, std.mem.span(cand_raw)) catch return;
+        defer self.allocator.free(cand_esc);
+        const mid_esc = jsonEscapeAlloc(self.allocator, std.mem.span(mid_raw)) catch return;
+        defer self.allocator.free(mid_esc);
         const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"local_candidate\",\"candidate\":\"{s}\",\"mid\":\"{s}\"}}", .{
-            jsonEscape(candidate),
-            jsonEscape(mid),
+            cand_esc,
+            mid_esc,
         }) catch return;
         defer self.allocator.free(msg);
         self.state_queue.push(msg) catch return;
@@ -188,27 +192,27 @@ pub const RtcPeer = struct {
         return @alignCast(@ptrCast(ptr orelse return null));
     }
 
-    fn jsonEscape(input: []const u8) std.fmt.Formatter(formatJsonEscape) {
-        return .{ .data = input };
-    }
-
-    fn formatJsonEscape(input: []const u8, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    fn jsonEscapeAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+        var out = std.ArrayList(u8).empty;
         for (input) |byte| {
             switch (byte) {
-                '"' => try writer.writeAll("\\\""),
-                '\\' => try writer.writeAll("\\\\"),
-                '\n' => try writer.writeAll("\\n"),
-                '\r' => try writer.writeAll("\\r"),
-                '\t' => try writer.writeAll("\\t"),
+                '"' => try out.appendSlice(allocator, "\\\""),
+                '\\' => try out.appendSlice(allocator, "\\\\"),
+                '\n' => try out.appendSlice(allocator, "\\n"),
+                '\r' => try out.appendSlice(allocator, "\\r"),
+                '\t' => try out.appendSlice(allocator, "\\t"),
                 else => {
                     if (byte < 0x20) {
-                        try writer.print("\\u{x:0>4}", .{byte});
+                        const hex = try std.fmt.allocPrint(allocator, "\\u{x:0>4}", .{byte});
+                        defer allocator.free(hex);
+                        try out.appendSlice(allocator, hex);
                     } else {
-                        try writer.writeByte(byte);
+                        try out.append(allocator, byte);
                     }
                 },
             }
         }
+        return out.toOwnedSlice(allocator);
     }
 };
 
@@ -222,7 +226,7 @@ pub fn cleanup() void {
 
 test "RtcPeer json escape" {
     const allocator = std.testing.allocator;
-    const result = try std.fmt.allocPrint(allocator, "{s}", .{RtcPeer.jsonEscape("hello\"world\\n")});
+    const result = try RtcPeer.jsonEscapeAlloc(allocator, "hello\"world\\n");
     defer allocator.free(result);
     try std.testing.expectEqualStrings("hello\\\"world\\\\n", result);
 }
