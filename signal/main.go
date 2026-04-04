@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,16 +23,25 @@ var upgrader = websocket.Upgrader{
 // wsConn wraps a gorilla WebSocket connection to implement the Sender interface.
 type wsConn struct {
 	conn *websocket.Conn
+	mu   sync.Mutex
 }
 
 func (w *wsConn) Send(data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.conn.WriteMessage(websocket.TextMessage, data)
+}
+
+func (w *wsConn) SendPing() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.conn.WriteMessage(websocket.PingMessage, nil)
 }
 
 // signalMsg is the initial message sent by a client to identify itself.
 type signalMsg struct {
 	Type        string `json:"type"`
-	PairingCode string `json:"pairingCode"`
+	PairingCode string `json:"pairing_code"`
 }
 
 // Handler handles HTTP and WebSocket requests for the signal server.
@@ -98,20 +108,20 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	case "join":
 		h.handleBrowser(ws, conn, msg.PairingCode, clientIP(r))
 	default:
-		ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","error":"unknown message type"}`))
+		conn.Send([]byte(`{"type":"error","error":"unknown message type"}`))
 	}
 }
 
 func (h *Handler) handleDaemon(ws *websocket.Conn, conn *wsConn, pairingCode string) {
 	if err := h.rm.Register(pairingCode, conn); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"type": "error", "error": err.Error()})
-		ws.WriteMessage(websocket.TextMessage, errMsg)
+		conn.Send(errMsg)
 		return
 	}
 	defer h.rm.DaemonDisconnected(pairingCode)
 
 	// Send registration confirmation
-	ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"registered"}`))
+	conn.Send([]byte(`{"type":"registered"}`))
 
 	// Start ping ticker
 	ticker := time.NewTicker(30 * time.Second)
@@ -119,7 +129,7 @@ func (h *Handler) handleDaemon(ws *websocket.Conn, conn *wsConn, pairingCode str
 
 	go func() {
 		for range ticker.C {
-			if err := ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if err := conn.SendPing(); err != nil {
 				return
 			}
 		}
@@ -132,7 +142,6 @@ func (h *Handler) handleDaemon(ws *websocket.Conn, conn *wsConn, pairingCode str
 			return
 		}
 		if err := h.rm.RelayFromDaemon(pairingCode, data); err != nil {
-			// Browser not connected yet or room gone; just continue
 			if err == ErrRoomNotFound {
 				return
 			}
@@ -143,13 +152,13 @@ func (h *Handler) handleDaemon(ws *websocket.Conn, conn *wsConn, pairingCode str
 func (h *Handler) handleBrowser(ws *websocket.Conn, conn *wsConn, pairingCode string, ip string) {
 	if err := h.rm.Join(pairingCode, conn, ip); err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"type": "error", "error": err.Error()})
-		ws.WriteMessage(websocket.TextMessage, errMsg)
+		conn.Send(errMsg)
 		return
 	}
 	defer h.rm.BrowserDisconnected(pairingCode)
 
 	// Send join confirmation
-	ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"joined"}`))
+	conn.Send([]byte(`{"type":"joined"}`))
 
 	// Start ping ticker
 	ticker := time.NewTicker(30 * time.Second)
@@ -157,7 +166,7 @@ func (h *Handler) handleBrowser(ws *websocket.Conn, conn *wsConn, pairingCode st
 
 	go func() {
 		for range ticker.C {
-			if err := ws.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if err := conn.SendPing(); err != nil {
 				return
 			}
 		}
