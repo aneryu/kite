@@ -448,7 +448,7 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, broadcast
         defer parsed.deinit();
     } else |_| {}
 
-    const msg = protocol.encodeHookEvent(allocator, event_name, tool_name, rest) catch return false;
+    const msg = protocol.encodeHookEvent(allocator, event_name, tool_name, rest, session_id) catch return false;
     defer allocator.free(msg);
     broadcaster.broadcast(msg);
 

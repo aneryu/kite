@@ -243,7 +243,7 @@ pub const SessionManager = struct {
                 }
 
                 // Broadcast to WebSocket clients
-                const msg = protocol.encodeTerminalOutput(self.allocator, data) catch continue;
+                const msg = protocol.encodeTerminalOutput(self.allocator, data, ms.session.id) catch continue;
                 defer self.allocator.free(msg);
                 self.broadcaster.broadcast(msg);
             }

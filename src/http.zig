@@ -109,14 +109,14 @@ pub const Server = struct {
         if (self.session_manager.getSession(1)) |session| {
             const history = session.terminal_buffer.slice();
             if (history.first.len > 0) {
-                const msg = protocol.encodeTerminalOutput(self.allocator, history.first) catch null;
+                const msg = protocol.encodeTerminalOutput(self.allocator, history.first, 1) catch null;
                 if (msg) |m| {
                     defer self.allocator.free(m);
                     client.send(m);
                 }
             }
             if (history.second.len > 0) {
-                const msg = protocol.encodeTerminalOutput(self.allocator, history.second) catch null;
+                const msg = protocol.encodeTerminalOutput(self.allocator, history.second, 1) catch null;
                 if (msg) |m| {
                     defer self.allocator.free(m);
                     client.send(m);

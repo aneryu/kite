@@ -1,23 +1,23 @@
 const std = @import("std");
 
-pub fn encodeTerminalOutput(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+pub fn encodeTerminalOutput(allocator: std.mem.Allocator, data: []const u8, session_id: u64) ![]u8 {
     const b64_len = std.base64.standard.Encoder.calcSize(data.len);
     const b64 = try allocator.alloc(u8, b64_len);
     defer allocator.free(b64);
     const encoded = std.base64.standard.Encoder.encode(b64, data);
 
     return std.fmt.allocPrint(allocator,
-        \\{{"type":"terminal_output","data":"{s}"}}
-    , .{encoded});
+        \\{{"type":"terminal_output","data":"{s}","session_id":{d}}}
+    , .{ encoded, session_id });
 }
 
-pub fn encodeHookEvent(allocator: std.mem.Allocator, event_name: []const u8, tool_name: []const u8, raw_json: []const u8) ![]u8 {
+pub fn encodeHookEvent(allocator: std.mem.Allocator, event_name: []const u8, tool_name: []const u8, raw_json: []const u8, session_id: u64) ![]u8 {
     const escaped_detail = try jsonEscapeAlloc(allocator, raw_json);
     defer allocator.free(escaped_detail);
 
     return std.fmt.allocPrint(allocator,
-        \\{{"type":"hook_event","event":"{s}","tool":"{s}","detail":"{s}","ts":{d}}}
-    , .{ event_name, tool_name, escaped_detail, std.time.timestamp() });
+        \\{{"type":"hook_event","event":"{s}","tool":"{s}","detail":"{s}","ts":{d},"session_id":{d}}}
+    , .{ event_name, tool_name, escaped_detail, std.time.timestamp(), session_id });
 }
 
 pub fn encodeSessionStatus(allocator: std.mem.Allocator, state: []const u8, session_id: u64) ![]u8 {
