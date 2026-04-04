@@ -1,24 +1,27 @@
 const std = @import("std");
 const posix = std.posix;
 const Session = @import("session.zig").Session;
+const session_mod = @import("session.zig");
 const Auth = @import("auth.zig").Auth;
 const auth_mod = @import("auth.zig");
-const HttpServer = @import("http.zig").Server;
-const WsBroadcaster = @import("ws.zig").WsBroadcaster;
 const hooks = @import("hooks.zig");
 const protocol = @import("protocol.zig");
 const terminal = @import("terminal.zig");
 const daemon = @import("daemon.zig");
 const SessionManager = @import("session_manager.zig").SessionManager;
+const SessionInfo = @import("session_manager.zig").SessionInfo;
+const MessageQueue = @import("message_queue.zig").MessageQueue;
+const SignalClient = @import("signal_client.zig").SignalClient;
+const RtcPeer = @import("rtc.zig").RtcPeer;
+const rtc_mod = @import("rtc.zig");
 
 const Config = struct {
-    port: u16 = 7890,
-    bind: []const u8 = "0.0.0.0",
     command: []const u8 = "claude",
     attach_id: ?u64 = null,
-    static_dir: ?[]const u8 = null,
     no_auth: bool = false,
     signal_url: []const u8 = "ws://localhost:8080",
+    stun_server: []const u8 = "stun:stun.l.google.com:19302",
+    turn_server: ?[]const u8 = null,
 };
 
 const Command = enum {
@@ -94,6 +97,15 @@ fn readConfigFile(allocator: std.mem.Allocator) ?FileConfig {
     return FileConfig{ .signal_url = url };
 }
 
+// Module-level mutable state for the broadcast callback
+var global_rtc_peer: ?*RtcPeer = null;
+
+fn broadcastViaRtc(data: []const u8) void {
+    if (global_rtc_peer) |peer| {
+        peer.send(data) catch {};
+    }
+}
+
 fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var config = Config{};
 
@@ -105,16 +117,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
-            config.port = std.fmt.parseInt(u16, args[i + 1], 10) catch 7890;
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "--bind") and i + 1 < args.len) {
-            config.bind = args[i + 1];
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "--static-dir") and i + 1 < args.len) {
-            config.static_dir = args[i + 1];
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "--no-auth")) {
+        if (std.mem.eql(u8, args[i], "--no-auth")) {
             config.no_auth = true;
         } else if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
             config.signal_url = args[i + 1];
@@ -139,63 +142,493 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var auth = Auth.init();
     auth.disabled = config.no_auth;
 
+    // Parse signal URL to get host and port (ws://host:port)
+    const signal_host, const signal_port = parseSignalUrl(config.signal_url);
+
+    // Generate pairing code for signal server registration
+    const pairing_code = auth_mod.generatePairingCode();
+
     try stdout.print("\n  kite daemon started\n", .{});
     try stdout.print("  ====================\n\n", .{});
-    try stdout.print("  Server: http://{s}:{d}\n", .{ config.bind, config.port });
+    try stdout.print("  Signal server: {s}\n", .{config.signal_url});
+    try stdout.print("  Pairing code:  {s}\n\n", .{pairing_code});
 
     if (config.no_auth) {
-        try stdout.print("\n  Auth disabled -- connect directly, no token required.\n\n", .{});
+        try stdout.print("  Auth disabled -- connect directly, no token required.\n\n", .{});
     } else {
         const setup_hex = auth.getSetupTokenHex();
-        const pairing_code = auth_mod.generatePairingCode();
-        const signal_url = try std.fmt.allocPrint(allocator, "http://{s}:{d}", .{ config.bind, config.port });
-        defer allocator.free(signal_url);
-        try auth_mod.renderQrCode(stdout, signal_url, &pairing_code, &setup_hex);
+        try auth_mod.renderQrCode(stdout, config.signal_url, &pairing_code, &setup_hex);
     }
     try stdout.print("  Use 'kite run' to create a session.\n\n", .{});
     try stdout.flush();
 
-    var broadcaster = WsBroadcaster.init(allocator);
-    defer broadcaster.deinit();
-    global_broadcaster = &broadcaster;
-    defer global_broadcaster = null;
+    // Create message queues
+    var data_queue = MessageQueue.init(allocator);
+    defer data_queue.deinit();
+    var signal_queue = MessageQueue.init(allocator);
+    defer signal_queue.deinit();
+    var state_queue = MessageQueue.init(allocator);
+    defer state_queue.deinit();
 
-    var session_manager = SessionManager.init(allocator, &broadcastViaBroadcaster);
+    var session_manager = SessionManager.init(allocator, &broadcastViaRtc);
     defer session_manager.deinit();
 
-    var http_server = try HttpServer.init(
-        allocator,
-        config.bind,
-        config.port,
-        &auth,
-        &broadcaster,
-        &session_manager,
-    );
-    http_server.static_dir = config.static_dir;
-    http_server.cors_enabled = config.no_auth;
-    const server_thread = try std.Thread.spawn(.{}, HttpServer.run, .{&http_server});
-    _ = server_thread;
+    // Connect to signal server
+    var signal_client = SignalClient.connect(allocator, signal_host, signal_port, "/ws", &signal_queue, &pairing_code) catch |err| {
+        logStderr("[kite] Failed to connect to signal server {s}:{d}: {}", .{ signal_host, signal_port, err });
+        return;
+    };
+    defer signal_client.deinit();
+    signal_client.register() catch |err| {
+        logStderr("[kite] Failed to register with signal server: {}", .{err});
+        return;
+    };
 
+    logStderr("[kite] Connected to signal server {s}:{d}", .{ signal_host, signal_port });
+
+    // Spawn signal read loop thread
+    const signal_thread = std.Thread.spawn(.{}, SignalClient.readLoop, .{&signal_client}) catch |err| {
+        logStderr("[kite] Failed to spawn signal read loop: {}", .{err});
+        return;
+    };
+    signal_thread.detach();
+
+    // Spawn IPC listener thread (unchanged)
     const ipc_thread = try std.Thread.spawn(.{}, runIpcListener, .{ allocator, &session_manager });
     _ = ipc_thread;
 
     try stdout.print("  Press Ctrl+C to stop the daemon.\n", .{});
     try stdout.flush();
 
-    // Block until stdin closes (pipe EOF) or Ctrl+C (SIGINT)
-    var sig_buf: [1]u8 = undefined;
+    // Initialize libdatachannel logger
+    rtc_mod.initLogger(3); // RTC_LOG_WARNING
+
+    // Main event loop — poll all queues
     while (true) {
-        const n = posix.read(posix.STDIN_FILENO, &sig_buf) catch break;
-        if (n == 0) break; // EOF — stdin closed
+        // Check stdin for EOF (daemon termination)
+        var stdin_fds = [1]posix.pollfd{
+            .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
+        };
+        const stdin_ready = posix.poll(&stdin_fds, 0) catch break;
+        if (stdin_ready > 0) {
+            if (stdin_fds[0].revents & posix.POLL.IN != 0 or
+                stdin_fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0)
+            {
+                var sig_buf: [1]u8 = undefined;
+                const n = posix.read(posix.STDIN_FILENO, &sig_buf) catch break;
+                if (n == 0) break; // EOF — stdin closed
+            }
+        }
+
+        // Process signal queue messages
+        const signal_msgs = signal_queue.drain() catch break;
+        if (signal_msgs.len > 0) {
+            defer signal_queue.freeBatch(signal_msgs);
+            for (signal_msgs) |msg| {
+                handleSignalMessage(allocator, msg, &session_manager, &auth, &data_queue, &state_queue, config);
+            }
+        }
+
+        // Process RTC state changes
+        const state_msgs = state_queue.drain() catch break;
+        if (state_msgs.len > 0) {
+            defer state_queue.freeBatch(state_msgs);
+            for (state_msgs) |msg| {
+                handleRtcStateMessage(allocator, msg, &signal_client, &session_manager, &auth);
+            }
+        }
+
+        // Process DataChannel messages from browser
+        const data_msgs = data_queue.drain() catch break;
+        if (data_msgs.len > 0) {
+            defer data_queue.freeBatch(data_msgs);
+            for (data_msgs) |msg| {
+                handleDataChannelMessage(allocator, msg, &session_manager, &auth);
+            }
+        }
+
+        std.Thread.sleep(10 * std.time.ns_per_ms);
     }
 
-    http_server.stop();
+    // Cleanup
+    if (global_rtc_peer) |peer| {
+        peer.deinit();
+        allocator.destroy(peer);
+        global_rtc_peer = null;
+    }
+    rtc_mod.cleanup();
 }
 
-var global_broadcaster: ?*WsBroadcaster = null;
+/// Parse ws://host:port or wss://host:port into (host, port).
+fn parseSignalUrl(url: []const u8) struct { []const u8, u16 } {
+    var rest = url;
+    if (std.mem.startsWith(u8, rest, "ws://")) {
+        rest = rest[5..];
+    } else if (std.mem.startsWith(u8, rest, "wss://")) {
+        rest = rest[6..];
+    }
+    // Strip path if present
+    if (std.mem.indexOf(u8, rest, "/")) |slash| {
+        rest = rest[0..slash];
+    }
+    // Split host:port
+    if (std.mem.lastIndexOf(u8, rest, ":")) |colon| {
+        const host = rest[0..colon];
+        const port = std.fmt.parseInt(u16, rest[colon + 1 ..], 10) catch 8080;
+        return .{ host, port };
+    }
+    return .{ rest, 8080 };
+}
 
-fn broadcastViaBroadcaster(msg: []const u8) void {
-    if (global_broadcaster) |b| b.broadcast(msg);
+fn handleSignalMessage(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    session_manager: *SessionManager,
+    auth: *Auth,
+    data_queue: *MessageQueue,
+    state_queue: *MessageQueue,
+    config: Config,
+) void {
+    _ = auth;
+    const parsed = std.json.parseFromSlice(struct {
+        @"type": []const u8,
+        sdp: ?[]const u8 = null,
+        sdp_type: ?[]const u8 = null,
+        candidate: ?[]const u8 = null,
+        mid: ?[]const u8 = null,
+    }, allocator, raw, .{ .ignore_unknown_fields = true }) catch {
+        logStderr("[kite-signal] Failed to parse signal message", .{});
+        return;
+    };
+    defer parsed.deinit();
+    const msg = parsed.value;
+
+    if (std.mem.eql(u8, msg.@"type", "peer_joined")) {
+        logStderr("[kite-signal] Peer joined, creating RTC peer", .{});
+
+        // Clean up existing peer if any
+        if (global_rtc_peer) |old_peer| {
+            old_peer.deinit();
+            allocator.destroy(old_peer);
+            global_rtc_peer = null;
+        }
+
+        const peer = allocator.create(RtcPeer) catch {
+            logStderr("[kite-signal] Failed to allocate RtcPeer", .{});
+            return;
+        };
+        peer.* = RtcPeer.init(allocator, .{
+            .stun_server = config.stun_server,
+            .turn_server = config.turn_server,
+        }, data_queue, state_queue) catch {
+            logStderr("[kite-signal] Failed to init RtcPeer", .{});
+            allocator.destroy(peer);
+            return;
+        };
+        global_rtc_peer = peer;
+        _ = session_manager;
+    } else if (std.mem.eql(u8, msg.@"type", "sdp_offer")) {
+        if (global_rtc_peer) |peer| {
+            peer.setRemoteDescription(msg.sdp orelse return, msg.sdp_type orelse "offer") catch |err| {
+                logStderr("[kite-signal] Failed to set remote description: {}", .{err});
+            };
+        }
+    } else if (std.mem.eql(u8, msg.@"type", "ice_candidate")) {
+        if (global_rtc_peer) |peer| {
+            peer.addRemoteCandidate(msg.candidate orelse return, msg.mid orelse "") catch |err| {
+                logStderr("[kite-signal] Failed to add remote candidate: {}", .{err});
+            };
+        }
+    } else if (std.mem.eql(u8, msg.@"type", "peer_left")) {
+        logStderr("[kite-signal] Peer left, destroying RTC peer", .{});
+        if (global_rtc_peer) |peer| {
+            peer.deinit();
+            allocator.destroy(peer);
+            global_rtc_peer = null;
+        }
+    }
+}
+
+fn handleRtcStateMessage(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    signal_client: *SignalClient,
+    session_manager: *SessionManager,
+    auth: *Auth,
+) void {
+    const parsed = std.json.parseFromSlice(struct {
+        @"type": []const u8,
+        sdp: ?[]const u8 = null,
+        sdp_type: ?[]const u8 = null,
+        candidate: ?[]const u8 = null,
+        mid: ?[]const u8 = null,
+        state: ?[]const u8 = null,
+    }, allocator, raw, .{ .ignore_unknown_fields = true }) catch return;
+    defer parsed.deinit();
+    const msg = parsed.value;
+
+    if (std.mem.eql(u8, msg.@"type", "local_description")) {
+        // Forward as sdp_answer via signal server
+        const json = std.fmt.allocPrint(allocator, "{{\"type\":\"sdp_answer\",\"sdp\":\"{s}\",\"sdp_type\":\"{s}\"}}", .{
+            msg.sdp orelse return,
+            msg.sdp_type orelse "answer",
+        }) catch return;
+        defer allocator.free(json);
+        signal_client.sendJson(json) catch |err| {
+            logStderr("[kite-rtc] Failed to send sdp_answer: {}", .{err});
+        };
+    } else if (std.mem.eql(u8, msg.@"type", "local_candidate")) {
+        // Forward as ice_candidate via signal server
+        const json = std.fmt.allocPrint(allocator, "{{\"type\":\"ice_candidate\",\"candidate\":\"{s}\",\"mid\":\"{s}\"}}", .{
+            msg.candidate orelse return,
+            msg.mid orelse "",
+        }) catch return;
+        defer allocator.free(json);
+        signal_client.sendJson(json) catch |err| {
+            logStderr("[kite-rtc] Failed to send ice_candidate: {}", .{err});
+        };
+    } else if (std.mem.eql(u8, msg.@"type", "state_change")) {
+        logStderr("[kite-rtc] State change: {s}", .{msg.state orelse "unknown"});
+    } else if (std.mem.eql(u8, msg.@"type", "dc_open")) {
+        logStderr("[kite-rtc] DataChannel opened", .{});
+        // Send sessions_sync to browser
+        sendSessionsSync(allocator, session_manager, auth);
+    }
+}
+
+fn sendSessionsSync(allocator: std.mem.Allocator, session_manager: *SessionManager, auth: *Auth) void {
+    _ = auth;
+    const sessions = session_manager.listSessions(allocator) catch return;
+    defer SessionManager.freeSessionList(allocator, sessions);
+
+    var json_buf: std.ArrayList(u8) = .empty;
+    defer json_buf.deinit(allocator);
+    json_buf.appendSlice(allocator, "{\"type\":\"sessions_sync\",\"sessions\":[") catch return;
+    for (sessions, 0..) |s, idx| {
+        if (idx > 0) json_buf.appendSlice(allocator, ",") catch return;
+        appendSessionJson(allocator, &json_buf, s) catch return;
+    }
+    json_buf.appendSlice(allocator, "]}") catch return;
+
+    if (global_rtc_peer) |peer| {
+        peer.send(json_buf.items) catch {};
+    }
+}
+
+fn appendSessionJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s: SessionInfo) !void {
+    try out.appendSlice(allocator, "{");
+    try out.writer(allocator).print("\"id\":{d},", .{s.id});
+    try protocol.appendJsonStringField(allocator, out, "state", stateString(s.state));
+    try out.appendSlice(allocator, ",");
+    try protocol.appendJsonStringField(allocator, out, "command", s.command);
+    try out.appendSlice(allocator, ",");
+    try protocol.appendJsonStringField(allocator, out, "cwd", s.cwd);
+
+    try out.appendSlice(allocator, ",\"tasks\":[");
+    for (s.tasks, 0..) |task, ti| {
+        if (ti > 0) try out.appendSlice(allocator, ",");
+        try out.appendSlice(allocator, "{");
+        try protocol.appendJsonStringField(allocator, out, "id", task.id);
+        try out.appendSlice(allocator, ",");
+        try protocol.appendJsonStringField(allocator, out, "subject", task.subject);
+        try out.appendSlice(allocator, ",\"completed\":");
+        try out.appendSlice(allocator, if (task.completed) "true" else "false");
+        try out.appendSlice(allocator, "}");
+    }
+    try out.appendSlice(allocator, "]");
+
+    try out.appendSlice(allocator, ",\"subagents\":[");
+    for (s.subagents, 0..) |sa, si| {
+        if (si > 0) try out.appendSlice(allocator, ",");
+        try out.appendSlice(allocator, "{");
+        try protocol.appendJsonStringField(allocator, out, "id", sa.id);
+        try out.appendSlice(allocator, ",");
+        try protocol.appendJsonStringField(allocator, out, "type", sa.agent_type);
+        try out.appendSlice(allocator, ",\"completed\":");
+        try out.appendSlice(allocator, if (sa.completed) "true" else "false");
+        try out.appendSlice(allocator, ",\"elapsed_ms\":");
+        try out.writer(allocator).print("{d}", .{sa.elapsed_ms});
+        try out.appendSlice(allocator, "}");
+    }
+    try out.appendSlice(allocator, "]");
+
+    if (s.current_activity) |act| {
+        try out.appendSlice(allocator, ",\"activity\":{");
+        try protocol.appendJsonStringField(allocator, out, "tool_name", act.tool_name);
+        try out.appendSlice(allocator, "}");
+    } else {
+        try out.appendSlice(allocator, ",\"activity\":null");
+    }
+
+    if (s.last_message.len > 0) {
+        try out.appendSlice(allocator, ",");
+        try protocol.appendJsonStringField(allocator, out, "last_message", s.last_message);
+    } else {
+        try out.appendSlice(allocator, ",\"last_message\":null");
+    }
+
+    if (s.prompt_summary.len > 0 or s.prompt_options.len > 0 or s.prompt_questions.len > 0) {
+        try out.appendSlice(allocator, ",\"prompt\":{");
+        try protocol.appendJsonStringField(allocator, out, "summary", s.prompt_summary);
+        try out.appendSlice(allocator, ",\"options\":[");
+        for (s.prompt_options, 0..) |opt, oi| {
+            if (oi > 0) try out.appendSlice(allocator, ",");
+            try protocol.appendJsonStringValue(allocator, out, opt);
+        }
+        try out.appendSlice(allocator, "]");
+        if (s.prompt_questions.len > 0) {
+            try out.appendSlice(allocator, ",\"questions\":[");
+            for (s.prompt_questions, 0..) |q, qi| {
+                if (qi > 0) try out.appendSlice(allocator, ",");
+                try out.appendSlice(allocator, "{");
+                try protocol.appendJsonStringField(allocator, out, "question", q.question);
+                try out.appendSlice(allocator, ",\"options\":[");
+                for (q.options, 0..) |opt, oi| {
+                    if (oi > 0) try out.appendSlice(allocator, ",");
+                    try protocol.appendJsonStringValue(allocator, out, opt);
+                }
+                try out.appendSlice(allocator, "]}");
+            }
+            try out.appendSlice(allocator, "]");
+        }
+        try out.appendSlice(allocator, "}");
+    } else {
+        try out.appendSlice(allocator, ",\"prompt\":null");
+    }
+
+    try out.appendSlice(allocator, "}");
+}
+
+fn stateString(state: session_mod.SessionState) []const u8 {
+    return switch (state) {
+        .running => "running",
+        .waiting => "waiting",
+        .asking => "asking",
+        .waiting_permission => "waiting_permission",
+        .stopped => "stopped",
+    };
+}
+
+fn handleDataChannelMessage(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    session_manager: *SessionManager,
+    auth: *Auth,
+) void {
+    var parsed_msg = protocol.parseClientMessage(allocator, raw) catch {
+        logStderr("[kite-dc] Failed to parse data channel message", .{});
+        return;
+    };
+    defer parsed_msg.deinit();
+    const msg = parsed_msg.value();
+
+    if (std.mem.eql(u8, msg.@"type", "auth")) {
+        handleAuthMessage(allocator, msg, auth);
+    } else if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
+        const session_id = msg.session_id orelse 1;
+        if (msg.data) |data| {
+            // Data is base64-encoded from the browser
+            const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(data) catch return;
+            const decoded = allocator.alloc(u8, decoded_len) catch return;
+            defer allocator.free(decoded);
+            std.base64.standard.Decoder.decode(decoded, data) catch return;
+            session_manager.writeToSession(session_id, decoded) catch {};
+        }
+    } else if (std.mem.eql(u8, msg.@"type", "resize")) {
+        const session_id = msg.session_id orelse 1;
+        const rows = msg.rows orelse return;
+        const cols = msg.cols orelse return;
+        _ = session_manager.resizeSession(session_id, rows, cols);
+    } else if (std.mem.eql(u8, msg.@"type", "prompt_response")) {
+        const session_id = msg.session_id orelse 1;
+        const text = msg.text orelse msg.data orelse "";
+        session_manager.resolvePromptResponse(session_id, text);
+    } else if (std.mem.eql(u8, msg.@"type", "create_session")) {
+        handleCreateSession(allocator, raw, session_manager);
+    } else if (std.mem.eql(u8, msg.@"type", "delete_session")) {
+        const session_id = msg.session_id orelse return;
+        session_manager.destroySession(session_id);
+        const result = protocol.encodeDeleteSessionResult(allocator, session_id, true) catch return;
+        defer allocator.free(result);
+        if (global_rtc_peer) |peer| {
+            peer.send(result) catch {};
+        }
+    } else if (std.mem.eql(u8, msg.@"type", "ping")) {
+        if (global_rtc_peer) |peer| {
+            peer.send(protocol.encodePong()) catch {};
+        }
+    }
+}
+
+fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, auth: *Auth) void {
+    if (auth.disabled) {
+        const result = protocol.encodeAuthResult(allocator, true, "") catch return;
+        defer allocator.free(result);
+        if (global_rtc_peer) |peer| {
+            peer.send(result) catch {};
+        }
+        return;
+    }
+
+    const token = msg.token orelse {
+        const result = protocol.encodeAuthResult(allocator, false, "") catch return;
+        defer allocator.free(result);
+        if (global_rtc_peer) |peer| {
+            peer.send(result) catch {};
+        }
+        return;
+    };
+
+    // Try as setup token first (exchange for session token)
+    if (auth.validateSetupToken(token)) |session_token_hex| {
+        const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch return;
+        defer allocator.free(result);
+        if (global_rtc_peer) |peer| {
+            peer.send(result) catch {};
+        }
+        return;
+    }
+
+    // Try as session token
+    if (auth.validateSessionToken(token)) {
+        const result = protocol.encodeAuthResult(allocator, true, token) catch return;
+        defer allocator.free(result);
+        if (global_rtc_peer) |peer| {
+            peer.send(result) catch {};
+        }
+        return;
+    }
+
+    // Invalid token
+    const result = protocol.encodeAuthResult(allocator, false, "") catch return;
+    defer allocator.free(result);
+    if (global_rtc_peer) |peer| {
+        peer.send(result) catch {};
+    }
+}
+
+fn handleCreateSession(allocator: std.mem.Allocator, raw: []const u8, session_manager: *SessionManager) void {
+    const parsed = std.json.parseFromSlice(struct {
+        command: ?[]const u8 = null,
+        cwd: ?[]const u8 = null,
+        rows: ?u16 = null,
+        cols: ?u16 = null,
+    }, allocator, raw, .{ .ignore_unknown_fields = true }) catch return;
+    defer parsed.deinit();
+    const opts = parsed.value;
+
+    const session_id = session_manager.createSession(.{
+        .command = opts.command orelse "claude",
+        .cwd = opts.cwd orelse "",
+        .rows = opts.rows orelse 24,
+        .cols = opts.cols orelse 80,
+    }) catch return;
+
+    const result = protocol.encodeCreateSessionResult(allocator, session_id) catch return;
+    defer allocator.free(result);
+    if (global_rtc_peer) |peer| {
+        peer.send(result) catch {};
+    }
 }
 
 var sigwinch_received: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -214,9 +647,6 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--attach") and i + 1 < args.len) {
             config.attach_id = std.fmt.parseInt(u64, args[i + 1], 10) catch null;
-            i += 1;
-        } else if (std.mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
-            config.port = std.fmt.parseInt(u16, args[i + 1], 10) catch 7890;
             i += 1;
         }
     }
@@ -766,16 +1196,12 @@ fn printUsage() void {
         \\  --signal-url <URL>     Signal server URL (default: ws://localhost:8080)
         \\
         \\Options for 'start':
-        \\  --port <PORT>          Server port (default: 7890)
-        \\  --bind <ADDR>          Bind address (default: 0.0.0.0)
-        \\  --static-dir <DIR>     Serve static files from directory
         \\  --no-auth              Disable authentication (development only)
         \\  --signal-url <URL>     Signal server URL (overrides config file)
         \\
         \\Options for 'run':
         \\  --cmd <CMD>       Command to run (default: claude)
         \\  --attach <ID>     Attach to existing session instead of creating new one
-        \\  --port <PORT>     Daemon port (default: 7890)
         \\
     ) catch {};
 }

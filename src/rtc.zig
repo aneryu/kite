@@ -118,7 +118,7 @@ pub const RtcPeer = struct {
 
     // -- C callbacks (run on libdatachannel internal threads) --
 
-    fn onLocalDescription(_: c_int, sdp_raw: [*c]const u8, type_raw: [*c]const u8, ptr: ?*anyopaque) callconv(.C) void {
+    fn onLocalDescription(_: c_int, sdp_raw: [*c]const u8, type_raw: [*c]const u8, ptr: ?*anyopaque) callconv(.c) void {
         const self = peerFromPtr(ptr) orelse return;
         const sdp_esc = jsonEscapeAlloc(self.allocator, std.mem.span(sdp_raw)) catch return;
         defer self.allocator.free(sdp_esc);
@@ -132,7 +132,7 @@ pub const RtcPeer = struct {
         self.state_queue.push(msg) catch return;
     }
 
-    fn onLocalCandidate(_: c_int, cand_raw: [*c]const u8, mid_raw: [*c]const u8, ptr: ?*anyopaque) callconv(.C) void {
+    fn onLocalCandidate(_: c_int, cand_raw: [*c]const u8, mid_raw: [*c]const u8, ptr: ?*anyopaque) callconv(.c) void {
         const self = peerFromPtr(ptr) orelse return;
         const cand_esc = jsonEscapeAlloc(self.allocator, std.mem.span(cand_raw)) catch return;
         defer self.allocator.free(cand_esc);
@@ -146,7 +146,7 @@ pub const RtcPeer = struct {
         self.state_queue.push(msg) catch return;
     }
 
-    fn onStateChange(_: c_int, state: c.rtcState, ptr: ?*anyopaque) callconv(.C) void {
+    fn onStateChange(_: c_int, state: c.rtcState, ptr: ?*anyopaque) callconv(.c) void {
         const self = peerFromPtr(ptr) orelse return;
         const state_str = switch (state) {
             c.RTC_NEW => "new",
@@ -162,7 +162,7 @@ pub const RtcPeer = struct {
         self.state_queue.push(msg) catch return;
     }
 
-    fn onDataChannel(_: c_int, dc: c_int, ptr: ?*anyopaque) callconv(.C) void {
+    fn onDataChannel(_: c_int, dc: c_int, ptr: ?*anyopaque) callconv(.c) void {
         const self = peerFromPtr(ptr) orelse return;
         self.dc = dc;
         c.rtcSetUserPointer(dc, @ptrCast(self));
@@ -170,12 +170,12 @@ pub const RtcPeer = struct {
         _ = c.rtcSetMessageCallback(dc, onMessage);
     }
 
-    fn onOpen(_: c_int, ptr: ?*anyopaque) callconv(.C) void {
+    fn onOpen(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
         const self = peerFromPtr(ptr) orelse return;
         self.state_queue.push("{\"type\":\"dc_open\"}") catch return;
     }
 
-    fn onMessage(_: c_int, msg_raw: [*c]const u8, size: c_int, ptr: ?*anyopaque) callconv(.C) void {
+    fn onMessage(_: c_int, msg_raw: [*c]const u8, size: c_int, ptr: ?*anyopaque) callconv(.c) void {
         const self = peerFromPtr(ptr) orelse return;
         if (size < 0) {
             // Negative size means text message (null-terminated string)
