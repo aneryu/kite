@@ -17,7 +17,8 @@ export class RtcManager {
 
     this.signal.onMessage((msg) => {
       switch (msg.type) {
-        case 'peer_joined':
+        case 'joined':
+          // Signal server confirmed we joined the room — start WebRTC handshake
           this.startWebRTC(stunServer);
           break;
         case 'sdp_answer':
