@@ -7,6 +7,7 @@ pub const WsBroadcaster = @import("ws.zig").WsBroadcaster;
 pub const WsClient = @import("ws.zig").WsClient;
 pub const hooks = @import("hooks.zig");
 pub const protocol = @import("protocol.zig");
+pub const daemon = @import("daemon.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
