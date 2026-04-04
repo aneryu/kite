@@ -1,5 +1,4 @@
-import { ws } from '../lib/ws';
-import { fetchSessions } from '../lib/api';
+import { rtc } from '../lib/webrtc';
 import type { SessionInfo, ServerMessage, QuestionInfo } from '../lib/types';
 
 type Listener = () => void;
@@ -15,27 +14,6 @@ class SessionStore {
   }
 
   private notify() { this.listeners.forEach((fn) => fn()); }
-
-  async load() {
-    try {
-      const newSessions = await fetchSessions();
-      this.sessions = newSessions;
-      // Clean up prompts for sessions that no longer exist
-      const ids = new Set(newSessions.map((s) => s.id));
-      for (const [id] of this.prompts) {
-        if (!ids.has(id)) this.prompts.delete(id);
-      }
-      // Update prompts from server data (don't clear existing valid ones)
-      for (const s of this.sessions) {
-        if (s.prompt && (s.state === 'asking' || s.state === 'waiting')) {
-          this.prompts.set(s.id, { summary: s.prompt.summary, options: s.prompt.options, questions: s.prompt.questions });
-        } else if (s.state !== 'asking' && s.state !== 'waiting') {
-          this.prompts.delete(s.id);
-        }
-      }
-      this.notify();
-    } catch {}
-  }
 
   getSession(id: number): SessionInfo | undefined {
     return this.sessions.find((s) => s.id === id);
@@ -66,8 +44,7 @@ class SessionStore {
       case 'session_state_change': {
         const s = this.getSession(sid);
         if (!s) {
-          // Unknown session — reload from server
-          this.load();
+          // Unknown session — no HTTP API to fetch from, just break
           break;
         }
         if (msg.state) {
@@ -93,7 +70,7 @@ class SessionStore {
         if (!s || !msg.agent_id) break;
         const existing = s.subagents.find((a) => a.id === msg.agent_id);
         if (existing) { existing.completed = msg.completed ?? existing.completed; existing.elapsed_ms = msg.elapsed_ms ?? existing.elapsed_ms; }
-        else { s.subagents.push({ id: msg.agent_id, type: msg.agent_type ?? '', completed: msg.completed ?? false, elapsed_ms: msg.elapsed_ms ?? 0 }); }
+        else { s.subagents.push({ id: msg.agent_id, type: msg.agent_type ?? '', description: msg.description ?? '', completed: msg.completed ?? false, elapsed_ms: msg.elapsed_ms ?? 0 }); }
         this.notify();
         break;
       }
@@ -107,7 +84,6 @@ class SessionStore {
       case 'prompt_request': {
         let s = this.getSession(sid);
         if (!s) {
-          this.load();
           break;
         }
         s.state = (msg.state as SessionInfo['state']) ?? 'waiting';
@@ -139,4 +115,4 @@ class SessionStore {
 }
 
 export const sessionStore = new SessionStore();
-ws.onMessage((msg) => sessionStore.handleMessage(msg));
+rtc.onMessage((msg) => sessionStore.handleMessage(msg));

@@ -2,7 +2,7 @@
   import TerminalView from './TerminalView.svelte';
   import PromptOverlay from './PromptOverlay.svelte';
   import { sessionStore } from '../stores/sessions';
-  import { ws } from '../lib/ws';
+  import { rtc } from '../lib/webrtc';
   import { onMount } from 'svelte';
 
   let { sessionId, onback }: { sessionId: number; onback: () => void } = $props();
@@ -16,8 +16,8 @@
     return unsub;
   });
 
-  function handlePromptSubmit(text: string) { ws.sendPromptResponse(text, sessionId); }
-  function sendKey(key: string) { ws.sendTerminalInput(key, sessionId); }
+  function handlePromptSubmit(text: string) { rtc.sendPromptResponse(text, sessionId); }
+  function sendKey(key: string) { rtc.sendTerminalInput(key, sessionId); }
 </script>
 
 <div class="detail">

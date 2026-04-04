@@ -52,11 +52,13 @@ export interface ServerMessage {
   completed?: boolean;
   agent_id?: string;
   agent_type?: string;
+  description?: string;
   elapsed_ms?: number;
   summary?: string;
   options?: string[];
   questions?: QuestionInfo[];
   question?: string;
   success?: boolean;
+  token?: string;
   last_message?: string | null;
 }

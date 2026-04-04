@@ -1,22 +1,35 @@
 <script lang="ts">
   import SessionList from './components/SessionList.svelte';
   import SessionDetail from './components/SessionDetail.svelte';
-  import { ws } from './lib/ws';
+  import { rtc } from './lib/webrtc';
   import { onMount } from 'svelte';
-  import { clearSetupTokenFromUrl, clearStoredToken, getSetupTokenFromUrl, getStoredToken, setStoredToken } from './lib/auth';
-  import { exchangeSetupToken, fetchSessions } from './lib/api';
+  import {
+    parsePairingFromHash,
+    clearPairingFromHash,
+    getStoredToken,
+    setStoredToken,
+    clearStoredToken,
+    getStoredPairingCode,
+    setStoredPairingCode,
+    clearStoredPairingCode,
+  } from './lib/auth';
 
   let currentView = $state<'list' | 'detail'>('list');
   let selectedSessionId = $state<number | null>(null);
   let authReady = $state(false);
   let authRequired = $state(false);
+  let connecting = $state(false);
   let authError = $state('');
-  let setupTokenInput = $state('');
+  let pairingInput = $state('');
+
+  const signalUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
 
   onMount(() => {
-    const unsubscribe = ws.onMessage((msg) => {
+    const unsubscribe = rtc.onMessage((msg) => {
       if (msg.type !== 'auth_result') return;
+      connecting = false;
       if (msg.success) {
+        if (msg.token) setStoredToken(msg.token as string);
         authReady = true;
         authRequired = false;
         authError = '';
@@ -24,77 +37,114 @@
         clearStoredToken();
         authReady = false;
         authRequired = true;
-        authError = 'Authentication failed. Use a fresh setup token.';
+        authError = 'Authentication failed.';
       }
     });
 
-    ws.connect();
     void initializeAuth();
 
     return () => {
       unsubscribe();
-      ws.disconnect();
+      rtc.disconnect();
     };
   });
 
+  async function waitForOpen(timeout = 10000): Promise<boolean> {
+    const start = Date.now();
+    while (!rtc.isOpen()) {
+      if (Date.now() - start > timeout) return false;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return true;
+  }
+
   async function initializeAuth() {
-    const urlToken = getSetupTokenFromUrl();
-    if (urlToken) {
-      setupTokenInput = urlToken;
-      await submitSetupToken(urlToken);
-      clearSetupTokenFromUrl();
+    // 1. Check URL hash for #/pair/{code}:{secret}
+    const pairing = parsePairingFromHash();
+    if (pairing) {
+      clearPairingFromHash();
+      connecting = true;
+      try {
+        await rtc.connect(signalUrl, pairing.pairingCode);
+        setStoredPairingCode(pairing.pairingCode);
+        if (await waitForOpen()) {
+          rtc.authenticate(pairing.setupSecret);
+        } else {
+          connecting = false;
+          authRequired = true;
+          authError = 'Connection timed out.';
+        }
+      } catch {
+        connecting = false;
+        authRequired = true;
+        authError = 'Failed to connect.';
+      }
       return;
     }
 
+    // 2. Check localStorage for session_token + pairing_code
     const storedToken = getStoredToken();
-    if (storedToken) {
-      ws.authenticate(storedToken);
+    const storedCode = getStoredPairingCode();
+    if (storedToken && storedCode) {
+      connecting = true;
       try {
-        await fetchSessions();
-        authReady = true;
-        authRequired = false;
-        return;
+        await rtc.connect(signalUrl, storedCode);
+        if (await waitForOpen()) {
+          rtc.authenticate(storedToken);
+        } else {
+          connecting = false;
+          clearStoredToken();
+          clearStoredPairingCode();
+          authRequired = true;
+          authError = 'Connection timed out. Re-pair with Kite.';
+        }
       } catch {
+        connecting = false;
         clearStoredToken();
+        clearStoredPairingCode();
         authRequired = true;
+        authError = 'Failed to connect.';
       }
+      return;
     }
 
-    try {
-      await fetchSessions();
-      authReady = true;
-      authRequired = false;
-    } catch (error) {
-      authReady = false;
-      authRequired = true;
-      authError = error instanceof Error && error.message === 'HTTP 401' ? '' : 'Unable to reach Kite.';
-    }
+    // 3. Show pairing input
+    authRequired = true;
   }
 
-  async function submitSetupToken(token = setupTokenInput) {
+  async function submitPairing(input = pairingInput) {
     authError = '';
-    const trimmed = token.trim();
+    const trimmed = input.trim();
     if (!trimmed) return;
 
+    // Accept "code:secret" format
+    const match = trimmed.match(/^([a-z0-9]{6}):([a-f0-9]{64})$/);
+    if (!match) {
+      authError = 'Invalid format. Expected code:secret (e.g. abc123:abcdef01...)';
+      return;
+    }
+
+    const [, code, secret] = match;
+    connecting = true;
     try {
-      const sessionToken = await exchangeSetupToken(trimmed);
-      setStoredToken(sessionToken);
-      authReady = true;
-      authRequired = false;
-      setupTokenInput = '';
-      ws.authenticate(sessionToken);
-      await fetchSessions();
+      await rtc.connect(signalUrl, code);
+      setStoredPairingCode(code);
+      if (await waitForOpen()) {
+        rtc.authenticate(secret);
+      } else {
+        connecting = false;
+        authError = 'Connection timed out.';
+      }
     } catch {
-      authReady = false;
-      authRequired = true;
-      authError = 'Setup token is invalid or expired.';
+      connecting = false;
+      authError = 'Failed to connect.';
     }
   }
 
   function handleAuthKeydown(event: KeyboardEvent) {
     if (event.key === 'Enter') {
       event.preventDefault();
-      void submitSetupToken();
+      void submitPairing();
     }
   }
 
@@ -105,18 +155,23 @@
 <main>
   <header><h1>Kite</h1></header>
 
-  {#if authRequired && !authReady}
+  {#if connecting}
+    <section class="auth-card">
+      <h2>Connecting...</h2>
+      <p>Establishing secure connection to Kite.</p>
+    </section>
+  {:else if authRequired && !authReady}
     <section class="auth-card">
       <h2>Connect</h2>
-      <p>Open the setup link from `kite start`, or paste the setup token here.</p>
+      <p>Open the pairing link from `kite start`, or paste the pairing code here.</p>
       <div class="auth-row">
         <input
           type="text"
-          bind:value={setupTokenInput}
+          bind:value={pairingInput}
           onkeydown={handleAuthKeydown}
-          placeholder="Paste setup token"
+          placeholder="code:secret"
         />
-        <button onclick={() => submitSetupToken()}>Unlock</button>
+        <button onclick={() => submitPairing()}>Connect</button>
       </div>
       {#if authError}
         <p class="error">{authError}</p>

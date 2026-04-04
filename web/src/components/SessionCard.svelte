@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SessionInfo } from '../lib/types';
   import { sessionStore } from '../stores/sessions';
-  import { ws } from '../lib/ws';
+  import { rtc } from '../lib/webrtc';
 
   let { session, onterminal }: { session: SessionInfo; onterminal: () => void } = $props();
   let inputText = $state('');
@@ -29,13 +29,13 @@
       if (Object.keys(updated).length >= totalQuestions) {
         const answers = JSON.stringify(updated);
         console.log('[SessionCard] auto-submit answers:', answers, 'session_id:', session.id);
-        ws.sendPromptResponse(answers, session.id);
+        rtc.sendPromptResponse(answers, session.id);
         selectedAnswers = {};
       }
     } else {
       // Stop/waiting: send plain text option
       console.log('[SessionCard] handleOption (text):', opt, 'session_id:', session.id);
-      ws.sendPromptResponse(opt, session.id);
+      rtc.sendPromptResponse(opt, session.id);
     }
   }
 
@@ -57,7 +57,7 @@
     if (!inputText.trim()) return;
     const text = inputText.trim();
     inputText = '';
-    ws.sendPromptResponse(text, session.id);
+    rtc.sendPromptResponse(text, session.id);
   }
 
   function handleKeydown(e: KeyboardEvent) {

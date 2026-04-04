@@ -2,20 +2,18 @@
   import { onMount } from 'svelte';
   import SessionCard from './SessionCard.svelte';
   import { sessionStore } from '../stores/sessions';
-  import { createSession } from '../lib/api';
+  import { rtc } from '../lib/webrtc';
 
   let { onselect }: { onselect: (id: number) => void } = $props();
   let sessions = $state(sessionStore.sorted());
 
   onMount(() => {
-    sessionStore.load();
     const unsub = sessionStore.subscribe(() => { sessions = sessionStore.sorted(); });
-    const interval = setInterval(() => sessionStore.load(), 5000);
-    return () => { unsub(); clearInterval(interval); };
+    return () => { unsub(); };
   });
 
-  async function handleCreate() {
-    try { await createSession(); await sessionStore.load(); } catch {}
+  function handleCreate() {
+    rtc.createSession();
   }
 </script>
 

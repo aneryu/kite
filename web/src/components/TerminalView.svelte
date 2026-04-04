@@ -4,8 +4,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { Unicode11Addon } from '@xterm/addon-unicode11';
   import '@xterm/xterm/css/xterm.css';
-  import { ws } from '../lib/ws';
-  import { fetchTerminalSnapshot } from '../lib/api';
+  import { rtc } from '../lib/webrtc';
   import type { ServerMessage } from '../lib/types';
 
   let { sessionId }: { sessionId: number } = $props();
@@ -35,12 +34,7 @@
     }
     terminal.open(containerEl);
     fitAddon.fit();
-    ws.sendResize(terminal.cols, terminal.rows, sessionId);
-
-    try {
-      const snapshot = await fetchTerminalSnapshot(sessionId);
-      if (snapshot) terminal.write(snapshot);
-    } catch {}
+    rtc.sendResize(terminal.cols, terminal.rows, sessionId);
 
     function base64ToBytes(b64: string): Uint8Array {
       const bin = atob(b64);
@@ -49,17 +43,17 @@
       return bytes;
     }
 
-    unsubscribe = ws.onMessage((msg: ServerMessage) => {
+    unsubscribe = rtc.onMessage((msg: ServerMessage) => {
       if (msg.type === 'terminal_output' && msg.session_id === sessionId && msg.data) {
         terminal.write(base64ToBytes(msg.data));
       }
     });
 
-    terminal.onData((data: string) => { ws.sendTerminalInput(data, sessionId); });
+    terminal.onData((data: string) => { rtc.sendTerminalInput(data, sessionId); });
 
     resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
-      ws.sendResize(terminal.cols, terminal.rows, sessionId);
+      rtc.sendResize(terminal.cols, terminal.rows, sessionId);
     });
     resizeObserver.observe(containerEl);
   });
