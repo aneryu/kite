@@ -576,6 +576,22 @@ fn sendSessionsSync(allocator: std.mem.Allocator, session_manager: *SessionManag
     broadcastViaRtc(json_buf.items);
 }
 
+fn sendTerminalSnapshots(allocator: std.mem.Allocator, session_manager: *SessionManager) void {
+    const sessions = session_manager.listSessions(allocator) catch return;
+    defer SessionManager.freeSessionList(allocator, sessions);
+
+    for (sessions) |s| {
+        if (session_manager.getTerminalSnapshot(allocator, s.id)) |history| {
+            defer allocator.free(history);
+            if (history.len > 0) {
+                const encoded = protocol.encodeTerminalOutput(allocator, history, s.id) catch continue;
+                defer allocator.free(encoded);
+                broadcastViaRtc(encoded);
+            }
+        }
+    }
+}
+
 fn appendSessionJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s: SessionInfo) !void {
     try out.appendSlice(allocator, "{");
     try out.writer(allocator).print("\"id\":{d},", .{s.id});
@@ -734,8 +750,9 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch return;
         defer allocator.free(result);
         broadcastViaRtc(result);
-        // Send sessions_sync after successful auth
+        // Send sessions_sync + terminal snapshots after successful auth
         sendSessionsSync(allocator, session_manager, auth);
+        sendTerminalSnapshots(allocator, session_manager);
         return;
     }
 
@@ -745,8 +762,9 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         const result = protocol.encodeAuthResult(allocator, true, token) catch return;
         defer allocator.free(result);
         broadcastViaRtc(result);
-        // Send sessions_sync after successful auth
+        // Send sessions_sync + terminal snapshots after successful auth
         sendSessionsSync(allocator, session_manager, auth);
+        sendTerminalSnapshots(allocator, session_manager);
         return;
     }
 
