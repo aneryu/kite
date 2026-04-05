@@ -34,6 +34,7 @@ pub const RtcPeer = struct {
     queue: *MessageQueue,
     state_queue: *MessageQueue,
     allocator: std.mem.Allocator,
+    member_id: []const u8 = "",
 
     /// Initialize RtcPeer fields (pc, dc remain -1).
     /// Call `setupPeerConnection` after the RtcPeer is at its final memory location.
@@ -41,11 +42,13 @@ pub const RtcPeer = struct {
         allocator: std.mem.Allocator,
         queue: *MessageQueue,
         state_queue: *MessageQueue,
+        member_id: []const u8,
     ) RtcPeer {
         return .{
             .queue = queue,
             .state_queue = state_queue,
             .allocator = allocator,
+            .member_id = member_id,
         };
     }
 
@@ -131,7 +134,10 @@ pub const RtcPeer = struct {
         defer self.allocator.free(sdp_esc);
         const type_esc = jsonEscapeAlloc(self.allocator, std.mem.span(type_raw)) catch return;
         defer self.allocator.free(type_esc);
-        const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"local_description\",\"sdp\":\"{s}\",\"sdp_type\":\"{s}\"}}", .{
+        const mid_esc = jsonEscapeAlloc(self.allocator, self.member_id) catch return;
+        defer self.allocator.free(mid_esc);
+        const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"local_description\",\"member_id\":\"{s}\",\"sdp\":\"{s}\",\"sdp_type\":\"{s}\"}}", .{
+            mid_esc,
             sdp_esc,
             type_esc,
         }) catch return;
@@ -145,7 +151,10 @@ pub const RtcPeer = struct {
         defer self.allocator.free(cand_esc);
         const mid_esc = jsonEscapeAlloc(self.allocator, std.mem.span(mid_raw)) catch return;
         defer self.allocator.free(mid_esc);
-        const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"local_candidate\",\"candidate\":\"{s}\",\"mid\":\"{s}\"}}", .{
+        const member_id_esc = jsonEscapeAlloc(self.allocator, self.member_id) catch return;
+        defer self.allocator.free(member_id_esc);
+        const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"local_candidate\",\"member_id\":\"{s}\",\"candidate\":\"{s}\",\"mid\":\"{s}\"}}", .{
+            member_id_esc,
             cand_esc,
             mid_esc,
         }) catch return;
@@ -164,7 +173,9 @@ pub const RtcPeer = struct {
             c.RTC_CLOSED => "closed",
             else => "unknown",
         };
-        const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"state_change\",\"state\":\"{s}\"}}", .{state_str}) catch return;
+        const member_id_esc = jsonEscapeAlloc(self.allocator, self.member_id) catch return;
+        defer self.allocator.free(member_id_esc);
+        const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"state_change\",\"member_id\":\"{s}\",\"state\":\"{s}\"}}", .{ member_id_esc, state_str }) catch return;
         defer self.allocator.free(msg);
         self.state_queue.push(msg) catch return;
     }
@@ -179,7 +190,11 @@ pub const RtcPeer = struct {
 
     fn onOpen(_: c_int, ptr: ?*anyopaque) callconv(.c) void {
         const self = peerFromPtr(ptr) orelse return;
-        self.state_queue.push("{\"type\":\"dc_open\"}") catch return;
+        const member_id_esc = jsonEscapeAlloc(self.allocator, self.member_id) catch return;
+        defer self.allocator.free(member_id_esc);
+        const msg = std.fmt.allocPrint(self.allocator, "{{\"type\":\"dc_open\",\"member_id\":\"{s}\"}}", .{member_id_esc}) catch return;
+        defer self.allocator.free(msg);
+        self.state_queue.push(msg) catch return;
     }
 
     fn onMessage(_: c_int, msg_raw: [*c]const u8, size: c_int, ptr: ?*anyopaque) callconv(.c) void {

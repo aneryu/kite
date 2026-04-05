@@ -122,12 +122,23 @@ fn writeConfigFile(allocator: std.mem.Allocator, config: FileConfig) void {
     file.writeAll(config_json) catch {};
 }
 
-// Module-level mutable state for the broadcast callback
-var global_rtc_peer: ?*RtcPeer = null;
+// Module-level mutable state for peer connections
+var global_peers: std.StringHashMap(*RtcPeer) = undefined;
+var global_peers_allocator: std.mem.Allocator = undefined;
+var global_data_queue: *MessageQueue = undefined;
+var global_state_queue: *MessageQueue = undefined;
+
+fn initGlobalPeers(allocator: std.mem.Allocator, data_queue: *MessageQueue, state_queue: *MessageQueue) void {
+    global_peers = std.StringHashMap(*RtcPeer).init(allocator);
+    global_peers_allocator = allocator;
+    global_data_queue = data_queue;
+    global_state_queue = state_queue;
+}
 
 fn broadcastViaRtc(data: []const u8) void {
-    if (global_rtc_peer) |peer| {
-        peer.send(data) catch {};
+    var it = global_peers.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.*.send(data) catch {};
     }
 }
 
@@ -217,6 +228,8 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var state_queue = MessageQueue.init(allocator);
     defer state_queue.deinit();
 
+    initGlobalPeers(allocator, &data_queue, &state_queue);
+
     var session_manager = SessionManager.init(allocator, &broadcastViaRtc);
     defer session_manager.deinit();
 
@@ -303,12 +316,14 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
 
-    // Cleanup
-    if (global_rtc_peer) |peer| {
-        peer.deinit();
-        allocator.destroy(peer);
-        global_rtc_peer = null;
+    // Cleanup all peers
+    var cleanup_it = global_peers.iterator();
+    while (cleanup_it.next()) |entry| {
+        entry.value_ptr.*.deinit();
+        allocator.destroy(entry.value_ptr.*);
+        allocator.free(entry.key_ptr.*);
     }
+    global_peers.deinit();
     rtc_mod.cleanup();
 }
 
@@ -345,10 +360,9 @@ fn handleSignalMessage(
     _ = auth;
     const parsed = std.json.parseFromSlice(struct {
         @"type": []const u8,
-        sdp: ?[]const u8 = null,
-        sdp_type: ?[]const u8 = null,
-        candidate: ?[]const u8 = null,
-        mid: ?[]const u8 = null,
+        member_id: ?[]const u8 = null,
+        role: ?[]const u8 = null,
+        from: ?[]const u8 = null,
     }, allocator, raw, .{ .ignore_unknown_fields = true }) catch {
         logStderr("[kite-signal] Failed to parse signal message", .{});
         return;
@@ -356,58 +370,130 @@ fn handleSignalMessage(
     defer parsed.deinit();
     const msg = parsed.value;
 
-    if (std.mem.eql(u8, msg.@"type", "peer_joined")) {
-        logStderr("[kite-signal] Peer joined, creating RTC peer", .{});
-
-        // Clean up existing peer if any
-        if (global_rtc_peer) |old_peer| {
-            old_peer.deinit();
-            allocator.destroy(old_peer);
-            global_rtc_peer = null;
-        }
-
-        const peer = allocator.create(RtcPeer) catch {
-            logStderr("[kite-signal] Failed to allocate RtcPeer", .{});
-            return;
-        };
-        peer.* = RtcPeer.init(allocator, data_queue, state_queue);
-        logStderr("[kite-signal] RtcPeer allocated, setting up peer connection (stun={s})", .{config.stun_server});
-        peer.setupPeerConnection(.{
-            .stun_server = config.stun_server,
-            .turn_server = config.turn_server,
-        }) catch {
-            logStderr("[kite-signal] Failed to setup RtcPeer connection", .{});
-            allocator.destroy(peer);
-            return;
-        };
-        global_rtc_peer = peer;
-        logStderr("[kite-signal] RtcPeer ready, waiting for SDP offer", .{});
+    if (std.mem.eql(u8, msg.@"type", "joined")) {
+        logStderr("[kite-signal] Joined topic, creating peers for existing browsers", .{});
+        createPeersForExistingMembers(allocator, raw, data_queue, state_queue, config);
         _ = session_manager;
-    } else if (std.mem.eql(u8, msg.@"type", "sdp_offer")) {
-        logStderr("[kite-signal] Received SDP offer (len={d}), global_rtc_peer={}", .{ (msg.sdp orelse "").len, global_rtc_peer != null });
-        if (global_rtc_peer) |peer| {
-            logStderr("[kite-signal] Setting remote description type={s}", .{msg.sdp_type orelse "offer"});
-            peer.setRemoteDescription(msg.sdp orelse return, msg.sdp_type orelse "offer") catch |err| {
-                logStderr("[kite-signal] Failed to set remote description: {}", .{err});
-            };
-            logStderr("[kite-signal] Remote description set successfully", .{});
-        } else {
-            logStderr("[kite-signal] WARNING: no RtcPeer to handle sdp_offer", .{});
+    } else if (std.mem.eql(u8, msg.@"type", "member_joined")) {
+        const role = msg.role orelse "";
+        const member_id = msg.member_id orelse return;
+        if (std.mem.eql(u8, role, "browser")) {
+            logStderr("[kite-signal] Browser joined: {s}", .{member_id});
+            createPeerForMember(allocator, member_id, data_queue, state_queue, config);
         }
-    } else if (std.mem.eql(u8, msg.@"type", "ice_candidate")) {
-        logStderr("[kite-signal] Received ICE candidate, global_rtc_peer={}", .{global_rtc_peer != null});
-        if (global_rtc_peer) |peer| {
-            peer.addRemoteCandidate(msg.candidate orelse return, msg.mid orelse "") catch |err| {
-                logStderr("[kite-signal] Failed to add remote candidate: {}", .{err});
-            };
+    } else if (std.mem.eql(u8, msg.@"type", "member_left")) {
+        const member_id = msg.member_id orelse return;
+        logStderr("[kite-signal] Member left: {s}", .{member_id});
+        destroyPeer(allocator, member_id);
+    } else if (std.mem.eql(u8, msg.@"type", "relay")) {
+        const from = msg.from orelse return;
+        handleRelayPayload(allocator, from, raw);
+    }
+}
+
+fn createPeersForExistingMembers(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    data_queue: *MessageQueue,
+    state_queue: *MessageQueue,
+    config: Config,
+) void {
+    // Parse the "members" array from the joined message
+    const MemberInfo = struct {
+        id: []const u8,
+        role: []const u8,
+    };
+    const JoinedMsg = struct {
+        members: []const MemberInfo = &.{},
+    };
+    const parsed = std.json.parseFromSlice(JoinedMsg, allocator, raw, .{ .ignore_unknown_fields = true }) catch return;
+    defer parsed.deinit();
+
+    for (parsed.value.members) |member| {
+        if (std.mem.eql(u8, member.role, "browser")) {
+            logStderr("[kite-signal] Creating peer for existing browser: {s}", .{member.id});
+            createPeerForMember(allocator, member.id, data_queue, state_queue, config);
         }
-    } else if (std.mem.eql(u8, msg.@"type", "peer_left")) {
-        logStderr("[kite-signal] Peer left, destroying RTC peer", .{});
-        if (global_rtc_peer) |peer| {
-            peer.deinit();
-            allocator.destroy(peer);
-            global_rtc_peer = null;
-        }
+    }
+}
+
+fn createPeerForMember(
+    allocator: std.mem.Allocator,
+    member_id: []const u8,
+    data_queue: *MessageQueue,
+    state_queue: *MessageQueue,
+    config: Config,
+) void {
+    // If peer already exists for this member, clean it up first
+    if (global_peers.fetchRemove(member_id)) |old_entry| {
+        old_entry.value.deinit();
+        allocator.destroy(old_entry.value);
+        allocator.free(old_entry.key);
+    }
+
+    const key = allocator.dupe(u8, member_id) catch return;
+    const peer = allocator.create(RtcPeer) catch {
+        allocator.free(key);
+        return;
+    };
+    peer.* = RtcPeer.init(allocator, data_queue, state_queue, key);
+    peer.setupPeerConnection(.{
+        .stun_server = config.stun_server,
+        .turn_server = config.turn_server,
+    }) catch {
+        peer.deinit();
+        allocator.destroy(peer);
+        allocator.free(key);
+        return;
+    };
+    global_peers.put(key, peer) catch {
+        peer.deinit();
+        allocator.destroy(peer);
+        allocator.free(key);
+    };
+}
+
+fn destroyPeer(allocator: std.mem.Allocator, member_id: []const u8) void {
+    if (global_peers.fetchRemove(member_id)) |entry| {
+        entry.value.deinit();
+        allocator.destroy(entry.value);
+        allocator.free(entry.key);
+    }
+}
+
+fn handleRelayPayload(allocator: std.mem.Allocator, from: []const u8, raw: []const u8) void {
+    // Parse the payload object from the relay message
+    const RelayMsg = struct {
+        payload: struct {
+            @"type": []const u8 = "",
+            sdp: ?[]const u8 = null,
+            sdp_type: ?[]const u8 = null,
+            candidate: ?[]const u8 = null,
+            mid: ?[]const u8 = null,
+        } = .{},
+    };
+    const parsed = std.json.parseFromSlice(RelayMsg, allocator, raw, .{ .ignore_unknown_fields = true }) catch {
+        logStderr("[kite-signal] Failed to parse relay payload", .{});
+        return;
+    };
+    defer parsed.deinit();
+    const payload = parsed.value.payload;
+
+    const peer = global_peers.get(from) orelse {
+        logStderr("[kite-signal] No peer for relay from: {s}", .{from});
+        return;
+    };
+
+    if (std.mem.eql(u8, payload.@"type", "sdp_offer")) {
+        logStderr("[kite-signal] Received SDP offer from {s} (len={d})", .{ from, (payload.sdp orelse "").len });
+        peer.setRemoteDescription(payload.sdp orelse return, payload.sdp_type orelse "offer") catch |err| {
+            logStderr("[kite-signal] Failed to set remote description: {}", .{err});
+        };
+    } else if (std.mem.eql(u8, payload.@"type", "ice_candidate")) {
+        logStderr("[kite-signal] Received ICE candidate from {s}", .{from});
+        peer.addRemoteCandidate(payload.candidate orelse return, payload.mid orelse "") catch |err| {
+            logStderr("[kite-signal] Failed to add remote candidate: {}", .{err});
+        };
     }
 }
 
@@ -418,6 +504,7 @@ fn handleRtcStateMessage(
 ) void {
     const parsed = std.json.parseFromSlice(struct {
         @"type": []const u8,
+        member_id: ?[]const u8 = null,
         sdp: ?[]const u8 = null,
         sdp_type: ?[]const u8 = null,
         candidate: ?[]const u8 = null,
@@ -428,38 +515,46 @@ fn handleRtcStateMessage(
     const msg = parsed.value;
 
     if (std.mem.eql(u8, msg.@"type", "local_description")) {
-        logStderr("[kite-rtc] Got local_description, forwarding as sdp_answer (sdp len={d}, type={s})", .{ (msg.sdp orelse "").len, msg.sdp_type orelse "answer" });
+        const member_id = msg.member_id orelse return;
+        logStderr("[kite-rtc] Got local_description for {s}, forwarding as sdp_answer (sdp len={d}, type={s})", .{ member_id, (msg.sdp orelse "").len, msg.sdp_type orelse "answer" });
         const escaped_sdp = protocol.jsonEscapeAllocPublic(allocator, msg.sdp orelse return) catch return;
         defer allocator.free(escaped_sdp);
         const escaped_type = protocol.jsonEscapeAllocPublic(allocator, msg.sdp_type orelse "answer") catch return;
         defer allocator.free(escaped_type);
-        const json = std.fmt.allocPrint(allocator, "{{\"type\":\"sdp_answer\",\"sdp\":\"{s}\",\"sdp_type\":\"{s}\"}}", .{
+        const escaped_to = protocol.jsonEscapeAllocPublic(allocator, member_id) catch return;
+        defer allocator.free(escaped_to);
+        const json = std.fmt.allocPrint(allocator, "{{\"type\":\"relay\",\"to\":\"{s}\",\"payload\":{{\"type\":\"sdp_answer\",\"sdp\":\"{s}\",\"sdp_type\":\"{s}\"}}}}", .{
+            escaped_to,
             escaped_sdp,
             escaped_type,
         }) catch return;
         defer allocator.free(json);
         signal_client.sendJson(json) catch |err| {
-            logStderr("[kite-rtc] Failed to send sdp_answer: {}", .{err});
+            logStderr("[kite-rtc] Failed to send sdp_answer relay: {}", .{err});
         };
-        logStderr("[kite-rtc] sdp_answer sent to signal server", .{});
+        logStderr("[kite-rtc] sdp_answer relayed to {s}", .{member_id});
     } else if (std.mem.eql(u8, msg.@"type", "local_candidate")) {
-        logStderr("[kite-rtc] Got local_candidate, forwarding via signal", .{});
+        const member_id = msg.member_id orelse return;
+        logStderr("[kite-rtc] Got local_candidate for {s}, forwarding via signal", .{member_id});
         const escaped_cand = protocol.jsonEscapeAllocPublic(allocator, msg.candidate orelse return) catch return;
         defer allocator.free(escaped_cand);
         const escaped_mid = protocol.jsonEscapeAllocPublic(allocator, msg.mid orelse "") catch return;
         defer allocator.free(escaped_mid);
-        const json = std.fmt.allocPrint(allocator, "{{\"type\":\"ice_candidate\",\"candidate\":\"{s}\",\"mid\":\"{s}\"}}", .{
+        const escaped_to = protocol.jsonEscapeAllocPublic(allocator, member_id) catch return;
+        defer allocator.free(escaped_to);
+        const json = std.fmt.allocPrint(allocator, "{{\"type\":\"relay\",\"to\":\"{s}\",\"payload\":{{\"type\":\"ice_candidate\",\"candidate\":\"{s}\",\"mid\":\"{s}\"}}}}", .{
+            escaped_to,
             escaped_cand,
             escaped_mid,
         }) catch return;
         defer allocator.free(json);
         signal_client.sendJson(json) catch |err| {
-            logStderr("[kite-rtc] Failed to send ice_candidate: {}", .{err});
+            logStderr("[kite-rtc] Failed to send ice_candidate relay: {}", .{err});
         };
     } else if (std.mem.eql(u8, msg.@"type", "state_change")) {
-        logStderr("[kite-rtc] State change: {s}", .{msg.state orelse "unknown"});
+        logStderr("[kite-rtc] State change ({s}): {s}", .{ msg.member_id orelse "unknown", msg.state orelse "unknown" });
     } else if (std.mem.eql(u8, msg.@"type", "dc_open")) {
-        logStderr("[kite-rtc] DataChannel opened!", .{});
+        logStderr("[kite-rtc] DataChannel opened for {s}!", .{msg.member_id orelse "unknown"});
         // Don't send sessions_sync here — wait until auth succeeds
     }
 }
@@ -478,9 +573,7 @@ fn sendSessionsSync(allocator: std.mem.Allocator, session_manager: *SessionManag
     }
     json_buf.appendSlice(allocator, "]}") catch return;
 
-    if (global_rtc_peer) |peer| {
-        peer.send(json_buf.items) catch {};
-    }
+    broadcastViaRtc(json_buf.items);
 }
 
 fn appendSessionJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), s: SessionInfo) !void {
@@ -614,13 +707,9 @@ fn handleDataChannelMessage(
         session_manager.destroySession(session_id);
         const result = protocol.encodeDeleteSessionResult(allocator, session_id, true) catch return;
         defer allocator.free(result);
-        if (global_rtc_peer) |peer| {
-            peer.send(result) catch {};
-        }
+        broadcastViaRtc(result);
     } else if (std.mem.eql(u8, msg.@"type", "ping")) {
-        if (global_rtc_peer) |peer| {
-            peer.send(protocol.encodePong()) catch {};
-        }
+        broadcastViaRtc(protocol.encodePong());
     }
 }
 
@@ -628,18 +717,14 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
     if (auth.disabled) {
         const result = protocol.encodeAuthResult(allocator, true, "") catch return;
         defer allocator.free(result);
-        if (global_rtc_peer) |peer| {
-            peer.send(result) catch {};
-        }
+        broadcastViaRtc(result);
         return;
     }
 
     const token = msg.token orelse {
         const result = protocol.encodeAuthResult(allocator, false, "") catch return;
         defer allocator.free(result);
-        if (global_rtc_peer) |peer| {
-            peer.send(result) catch {};
-        }
+        broadcastViaRtc(result);
         return;
     };
 
@@ -648,9 +733,7 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         logStderr("[kite-auth] Setup secret valid, sending session token", .{});
         const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch return;
         defer allocator.free(result);
-        if (global_rtc_peer) |peer| {
-            peer.send(result) catch {};
-        }
+        broadcastViaRtc(result);
         // Send sessions_sync after successful auth
         sendSessionsSync(allocator, session_manager, auth);
         return;
@@ -661,9 +744,7 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         logStderr("[kite-auth] Session token valid", .{});
         const result = protocol.encodeAuthResult(allocator, true, token) catch return;
         defer allocator.free(result);
-        if (global_rtc_peer) |peer| {
-            peer.send(result) catch {};
-        }
+        broadcastViaRtc(result);
         // Send sessions_sync after successful auth
         sendSessionsSync(allocator, session_manager, auth);
         return;
@@ -673,9 +754,7 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
     logStderr("[kite-auth] Token invalid (len={d})", .{token.len});
     const result = protocol.encodeAuthResult(allocator, false, "") catch return;
     defer allocator.free(result);
-    if (global_rtc_peer) |peer| {
-        peer.send(result) catch {};
-    }
+    broadcastViaRtc(result);
 }
 
 fn handleCreateSession(allocator: std.mem.Allocator, raw: []const u8, session_manager: *SessionManager) void {
@@ -697,9 +776,7 @@ fn handleCreateSession(allocator: std.mem.Allocator, raw: []const u8, session_ma
 
     const result = protocol.encodeCreateSessionResult(allocator, session_id) catch return;
     defer allocator.free(result);
-    if (global_rtc_peer) |peer| {
-        peer.send(result) catch {};
-    }
+    broadcastViaRtc(result);
 }
 
 var sigwinch_received: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
