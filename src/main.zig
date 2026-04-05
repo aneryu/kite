@@ -1333,6 +1333,9 @@ fn runStatus(allocator: std.mem.Allocator) !void {
         try stdout.flush();
         return;
     };
+    defer allocator.free(file_config.signal_url);
+    defer allocator.free(file_config.pairing_code);
+    defer allocator.free(file_config.setup_secret);
 
     if (file_config.pairing_code.len != 6 or file_config.setup_secret.len != 64) {
         try stdout.print("  No pairing code configured. Run 'kite start' to generate one.\n\n", .{});
