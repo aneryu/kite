@@ -724,6 +724,16 @@ fn handleDataChannelMessage(
         const result = protocol.encodeDeleteSessionResult(allocator, session_id, true) catch return;
         defer allocator.free(result);
         broadcastViaRtc(result);
+    } else if (std.mem.eql(u8, msg.@"type", "request_snapshot")) {
+        const session_id = msg.session_id orelse return;
+        if (session_manager.getTerminalSnapshot(allocator, session_id)) |history| {
+            defer allocator.free(history);
+            if (history.len > 0) {
+                const encoded = protocol.encodeTerminalOutput(allocator, history, session_id) catch return;
+                defer allocator.free(encoded);
+                broadcastViaRtc(encoded);
+            }
+        }
     } else if (std.mem.eql(u8, msg.@"type", "ping")) {
         broadcastViaRtc(protocol.encodePong());
     }
@@ -752,7 +762,6 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         broadcastViaRtc(result);
         // Send sessions_sync + terminal snapshots after successful auth
         sendSessionsSync(allocator, session_manager, auth);
-        sendTerminalSnapshots(allocator, session_manager);
         return;
     }
 
@@ -764,7 +773,6 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         broadcastViaRtc(result);
         // Send sessions_sync + terminal snapshots after successful auth
         sendSessionsSync(allocator, session_manager, auth);
-        sendTerminalSnapshots(allocator, session_manager);
         return;
     }
 

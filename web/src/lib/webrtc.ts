@@ -81,6 +81,10 @@ export class RtcManager {
     this.sendRaw({ type: 'resize', cols, rows, session_id: sessionId });
   }
 
+  requestSnapshot(sessionId: number): void {
+    this.sendRaw({ type: 'request_snapshot', session_id: sessionId });
+  }
+
   sendPromptResponse(text: string, sessionId: number): void {
     this.sendRaw({ type: 'prompt_response', text, session_id: sessionId });
   }

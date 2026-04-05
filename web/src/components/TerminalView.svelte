@@ -35,6 +35,7 @@
     terminal.open(containerEl);
     fitAddon.fit();
     rtc.sendResize(terminal.cols, terminal.rows, sessionId);
+    rtc.requestSnapshot(sessionId);
 
     function base64ToBytes(b64: string): Uint8Array {
       const bin = atob(b64);
