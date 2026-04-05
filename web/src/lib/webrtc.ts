@@ -12,29 +12,46 @@ export class RtcManager {
   private pingInterval: number | null = null;
   private pendingCandidates: { candidate: string; mid: string }[] = [];
   private remoteDescriptionSet = false;
+  private daemonMemberID: string | null = null;
+  private stunServer: string = 'stun:stun.l.google.com:19302';
+  private storedToken: string | null = null;
 
-  /** Connect to signaling server and wait for peer_joined to start WebRTC */
   async connect(signalUrl: string, pairingCode: string, stunServer?: string): Promise<void> {
-    this.signal = new SignalClient(signalUrl, pairingCode);
+    if (stunServer) this.stunServer = stunServer;
+    this.signal = new SignalClient(signalUrl, pairingCode, 'browser');
 
     this.signal.onMessage((msg) => {
       switch (msg.type) {
         case 'joined':
-          // Signal server confirmed we joined the room — start WebRTC handshake
-          this.startWebRTC(stunServer);
+          // Check if daemon is already in the topic
+          this.daemonMemberID = null;
+          if (msg.members) {
+            const daemon = msg.members.find((m) => m.role === 'daemon');
+            if (daemon) {
+              this.daemonMemberID = daemon.id;
+              this.startWebRTC();
+            }
+            // else: no daemon yet, wait for member_joined
+          }
+          this.handlers.forEach((h) => h({ type: 'signal_connected' }));
           break;
-        case 'sdp_answer':
-          if (msg.sdp && msg.sdp_type) {
-            this.handleSdpAnswer(msg.sdp, msg.sdp_type as RTCSdpType);
+        case 'member_joined':
+          if (msg.role === 'daemon' && msg.member_id) {
+            this.daemonMemberID = msg.member_id;
+            this.startWebRTC();
           }
           break;
-        case 'ice_candidate':
-          if (msg.candidate !== undefined && msg.mid !== undefined) {
-            this.handleRemoteCandidate(msg.candidate, msg.mid);
+        case 'member_left':
+          if (msg.member_id === this.daemonMemberID) {
+            this.handlePeerLeft();
+            this.daemonMemberID = null;
+            this.handlers.forEach((h) => h({ type: 'daemon_disconnected' }));
           }
           break;
-        case 'peer_left':
-          this.handlePeerLeft();
+        case 'relay':
+          if (msg.payload) {
+            this.handleRelayedMessage(msg.payload);
+          }
           break;
         case 'error':
           console.error('[RTC] Signal error:', msg.error);
@@ -42,24 +59,20 @@ export class RtcManager {
       }
     });
 
-    this.signal.connect();
+    await this.signal.connect();
   }
 
-  /** Subscribe to DataChannel messages. Returns unsubscribe. */
   onMessage(handler: MessageHandler): () => void {
     this.handlers.push(handler);
-    return () => {
-      this.handlers = this.handlers.filter((h) => h !== handler);
-    };
+    return () => { this.handlers = this.handlers.filter((h) => h !== handler); };
   }
 
-  /** Send auth token via DataChannel */
   authenticate(token: string): void {
+    this.storedToken = token;
     this.authenticated = true;
     this.sendRaw({ type: 'auth', token });
   }
 
-  /** Same API as WsManager */
   sendTerminalInput(data: string, sessionId: number): void {
     this.sendRaw({ type: 'terminal_input', data, session_id: sessionId });
   }
@@ -93,34 +106,40 @@ export class RtcManager {
     this.signal?.disconnect();
     this.signal = null;
     this.authenticated = false;
+    this.daemonMemberID = null;
   }
 
-  // --- Private methods ---
+  // --- Private ---
 
-  private startWebRTC(stunServer?: string): void {
-    const iceServers: RTCIceServer[] = [
-      { urls: stunServer || 'stun:stun.l.google.com:19302' },
-    ];
+  private startWebRTC(): void {
+    // Clean up any existing connection
+    this.stopPing();
+    this.dc?.close();
+    this.pc?.close();
+    this.remoteDescriptionSet = false;
+    this.pendingCandidates = [];
 
+    const iceServers: RTCIceServer[] = [{ urls: this.stunServer }];
     this.pc = new RTCPeerConnection({ iceServers });
-
     this.dc = this.pc.createDataChannel('kite', { ordered: true });
 
     this.dc.onopen = () => {
       console.log('[RTC] DataChannel open');
       this.startPing();
+      // Auto re-authenticate if we have a stored token
+      if (this.storedToken) {
+        this.sendRaw({ type: 'auth', token: this.storedToken });
+      }
     };
 
     this.dc.onmessage = (ev) => {
       try {
         const raw = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
-        console.log('[RTC] DC recv:', raw.substring(0, 200));
         const msg: ServerMessage = JSON.parse(raw);
         if (msg.type === 'pong') return;
-        console.log('[RTC] Dispatching to', this.handlers.length, 'handlers, type:', msg.type);
         this.handlers.forEach((h) => h(msg));
       } catch (e) {
-        console.error('[RTC] DC message parse error:', e, 'raw:', ev.data);
+        console.error('[RTC] DC message parse error:', e);
       }
     };
 
@@ -130,11 +149,12 @@ export class RtcManager {
     };
 
     this.pc.onicecandidate = (ev) => {
-      if (ev.candidate && this.signal) {
-        this.signal.sendIceCandidate(
-          ev.candidate.candidate,
-          ev.candidate.sdpMid || '',
-        );
+      if (ev.candidate && this.signal && this.daemonMemberID) {
+        this.signal.relay(this.daemonMemberID, {
+          type: 'ice_candidate',
+          candidate: ev.candidate.candidate,
+          mid: ev.candidate.sdpMid || '',
+        });
       }
     };
 
@@ -146,24 +166,34 @@ export class RtcManager {
       }
     };
 
-    this.pc
-      .createOffer()
+    this.pc.createOffer()
       .then((offer) => this.pc!.setLocalDescription(offer))
       .then(() => {
-        if (this.pc?.localDescription && this.signal) {
-          this.signal.sendSdpOffer(this.pc.localDescription.sdp, this.pc.localDescription.type);
+        if (this.pc?.localDescription && this.signal && this.daemonMemberID) {
+          this.signal.relay(this.daemonMemberID, {
+            type: 'sdp_offer',
+            sdp: this.pc.localDescription.sdp,
+            sdp_type: this.pc.localDescription.type,
+          });
         }
       })
       .catch((err) => console.error('[RTC] Offer error:', err));
+  }
+
+  private handleRelayedMessage(payload: Record<string, unknown>): void {
+    const type = payload.type as string;
+    if (type === 'sdp_answer') {
+      this.handleSdpAnswer(payload.sdp as string, payload.sdp_type as RTCSdpType);
+    } else if (type === 'ice_candidate') {
+      this.handleRemoteCandidate(payload.candidate as string, payload.mid as string);
+    }
   }
 
   private async handleSdpAnswer(sdp: string, sdpType: RTCSdpType): Promise<void> {
     if (!this.pc) return;
     try {
       await this.pc.setRemoteDescription(new RTCSessionDescription({ sdp, type: sdpType }));
-      console.log('[RTC] Remote description set');
       this.remoteDescriptionSet = true;
-      // Flush any ICE candidates that arrived before the answer
       for (const c of this.pendingCandidates) {
         await this.pc.addIceCandidate(new RTCIceCandidate({ candidate: c.candidate, sdpMid: c.mid }));
       }
@@ -176,7 +206,6 @@ export class RtcManager {
   private async handleRemoteCandidate(candidate: string, mid: string): Promise<void> {
     if (!this.pc) return;
     if (!this.remoteDescriptionSet) {
-      // Queue until remote description is set
       this.pendingCandidates.push({ candidate, mid });
       return;
     }
@@ -215,8 +244,6 @@ export class RtcManager {
   private sendRaw(msg: Record<string, unknown>): void {
     if (this.dc?.readyState === 'open') {
       this.dc.send(JSON.stringify(msg));
-    } else {
-      console.warn('[RTC] sendRaw FAILED - DataChannel not open, readyState:', this.dc?.readyState);
     }
   }
 }
