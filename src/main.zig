@@ -34,6 +34,9 @@ const Command = enum {
 };
 
 pub fn main() !void {
+    log.init();
+    defer log.deinit();
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -142,6 +145,22 @@ fn broadcastViaRtc(data: []const u8) void {
     }
 }
 
+/// Send terminal output in chunks to avoid exceeding WebRTC DataChannel message size limit (256KB).
+/// Raw data is split into 128KB chunks, each base64-encoded and sent as a separate terminal_output message.
+const snapshot_chunk_size = 128 * 1024;
+
+fn broadcastTerminalSnapshot(allocator: std.mem.Allocator, data: []const u8, session_id: u64) void {
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const end = @min(offset + snapshot_chunk_size, data.len);
+        const chunk = data[offset..end];
+        const encoded = protocol.encodeTerminalOutput(allocator, chunk, session_id) catch return;
+        defer allocator.free(encoded);
+        broadcastViaRtc(encoded);
+        offset = end;
+    }
+}
+
 fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var config = Config{};
 
@@ -162,6 +181,9 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (daemon.isRunning()) {
         const stderr_file = std.fs.File.stderr();
         _ = stderr_file.write("kite daemon is already running.\n") catch {};
+        if (file_config.signal_url.len > 0) allocator.free(file_config.signal_url);
+        if (file_config.pairing_code.len > 0) allocator.free(file_config.pairing_code);
+        if (file_config.setup_secret.len > 0) allocator.free(file_config.setup_secret);
         return;
     }
 
@@ -584,9 +606,7 @@ fn sendTerminalSnapshots(allocator: std.mem.Allocator, session_manager: *Session
         if (session_manager.getTerminalSnapshot(allocator, s.id)) |history| {
             defer allocator.free(history);
             if (history.len > 0) {
-                const encoded = protocol.encodeTerminalOutput(allocator, history, s.id) catch continue;
-                defer allocator.free(encoded);
-                broadcastViaRtc(encoded);
+                broadcastTerminalSnapshot(allocator, history, s.id);
             }
         }
     }
@@ -719,9 +739,7 @@ fn handleDataChannelMessage(
             defer allocator.free(history);
             logStderr("[kite-dc] snapshot size: {d} bytes", .{history.len});
             if (history.len > 0) {
-                const encoded = protocol.encodeTerminalOutput(allocator, history, session_id) catch return;
-                defer allocator.free(encoded);
-                broadcastViaRtc(encoded);
+                broadcastTerminalSnapshot(allocator, history, session_id);
             }
         }
     } else if (std.mem.eql(u8, msg.@"type", "prompt_response")) {
@@ -1184,11 +1202,9 @@ fn handlePermissionRequestIpc(allocator: std.mem.Allocator, session_manager: *Se
     }
 }
 
+const log = @import("log.zig");
 fn logStderr(comptime fmt: []const u8, args: anytype) void {
-    const stderr = std.fs.File.stderr();
-    const out = std.fmt.allocPrint(std.heap.page_allocator, fmt ++ "\n", args) catch return;
-    defer std.heap.page_allocator.free(out);
-    _ = stderr.write(out) catch {};
+    log.debug(fmt, args);
 }
 
 const HOOK_LOG_PATH = "/tmp/kite-hooks.jsonl";

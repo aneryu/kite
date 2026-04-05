@@ -111,9 +111,9 @@
           waitingForDaemon = true;
         }
       } catch {
+        // Connection failed — keep credentials, show waiting state
         connecting = false;
-        authError = 'Failed to connect to signal server.';
-        authRequired = true;
+        waitingForDaemon = true;
       }
       return;
     }
@@ -133,9 +133,9 @@
           waitingForDaemon = true;
         }
       } catch {
+        // Connection failed — keep credentials, show waiting state
         connecting = false;
-        authError = 'Failed to connect to signal server.';
-        authRequired = true;
+        waitingForDaemon = true;
       }
       return;
     }

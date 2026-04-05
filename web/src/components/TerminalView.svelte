@@ -33,7 +33,6 @@
       console.warn('Unicode11 addon failed to load:', e);
     }
     terminal.open(containerEl);
-    fitAddon.fit();
 
     function base64ToBytes(b64: string): Uint8Array {
       const bin = atob(b64);
@@ -49,14 +48,18 @@
       }
     });
 
-    rtc.sendResize(terminal.cols, terminal.rows, sessionId);
-    rtc.requestSnapshot(sessionId);
-
     terminal.onData((data: string) => { rtc.sendTerminalInput(data, sessionId); });
 
+    // Use ResizeObserver to fit and request snapshot only after the container has layout dimensions.
+    // Calling fitAddon.fit() before the container is laid out results in 0-dimension terminal (black screen).
+    let snapshotRequested = false;
     resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
       rtc.sendResize(terminal.cols, terminal.rows, sessionId);
+      if (!snapshotRequested) {
+        snapshotRequested = true;
+        rtc.requestSnapshot(sessionId);
+      }
     });
     resizeObserver.observe(containerEl);
   });
