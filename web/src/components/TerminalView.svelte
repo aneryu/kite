@@ -34,8 +34,6 @@
     }
     terminal.open(containerEl);
     fitAddon.fit();
-    rtc.sendResize(terminal.cols, terminal.rows, sessionId);
-    rtc.requestSnapshot(sessionId);
 
     function base64ToBytes(b64: string): Uint8Array {
       const bin = atob(b64);
@@ -44,11 +42,15 @@
       return bytes;
     }
 
+    // Register handler BEFORE requesting snapshot to avoid race condition
     unsubscribe = rtc.onMessage((msg: ServerMessage) => {
       if (msg.type === 'terminal_output' && msg.session_id === sessionId && msg.data) {
         terminal.write(base64ToBytes(msg.data));
       }
     });
+
+    rtc.sendResize(terminal.cols, terminal.rows, sessionId);
+    rtc.requestSnapshot(sessionId);
 
     terminal.onData((data: string) => { rtc.sendTerminalInput(data, sessionId); });
 
