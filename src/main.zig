@@ -56,7 +56,7 @@ pub fn main() !void {
         .run => try runRun(allocator, args[2..]),
         .hook => try runHook(allocator, args[2..]),
         .setup => try runSetup(allocator, args[2..]),
-        .status => try runStatus(),
+        .status => try runStatus(allocator),
         .help => printUsage(),
     }
 }
@@ -1310,19 +1310,59 @@ fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try stdout.flush();
 }
 
-fn runStatus() !void {
+fn runStatus(allocator: std.mem.Allocator) !void {
     const stdout_file = std.fs.File.stdout();
-    var stdout_buf: [1024]u8 = undefined;
+    var stdout_buf: [8192]u8 = undefined;
     var stdout_writer = stdout_file.writer(&stdout_buf);
     const stdout = &stdout_writer.interface;
 
-    const stream = std.net.connectUnixSocket(hooks.IPC_SOCKET_PATH) catch {
-        try stdout.print("kite server is not running.\n", .{});
+    const is_running = blk: {
+        const stream = std.net.connectUnixSocket(hooks.IPC_SOCKET_PATH) catch break :blk false;
+        stream.close();
+        break :blk true;
+    };
+
+    if (is_running) {
+        try stdout.print("\n  kite is running\n\n", .{});
+    } else {
+        try stdout.print("\n  kite is not running\n\n", .{});
+    }
+
+    const file_config = readConfigFile(allocator) orelse {
+        try stdout.print("  No config found. Run 'kite setup' first.\n\n", .{});
         try stdout.flush();
         return;
     };
-    stream.close();
-    try stdout.print("kite server is running.\n", .{});
+
+    if (file_config.pairing_code.len != 6 or file_config.setup_secret.len != 64) {
+        try stdout.print("  No pairing code configured. Run 'kite start' to generate one.\n\n", .{});
+        try stdout.flush();
+        return;
+    }
+
+    try stdout.print("  Signal server: {s}\n", .{file_config.signal_url});
+    try stdout.print("  Pairing code:  {s}\n\n", .{file_config.pairing_code});
+
+    // Build pairing URL
+    const http_url = if (std.mem.startsWith(u8, file_config.signal_url, "wss://"))
+        try std.fmt.allocPrint(allocator, "https://{s}", .{file_config.signal_url[6..]})
+    else if (std.mem.startsWith(u8, file_config.signal_url, "ws://"))
+        try std.fmt.allocPrint(allocator, "http://{s}", .{file_config.signal_url[5..]})
+    else
+        try allocator.dupe(u8, file_config.signal_url);
+    defer allocator.free(http_url);
+
+    const pairing_url = try std.fmt.allocPrint(allocator, "{s}/#/pair/{s}:{s}", .{ http_url, file_config.pairing_code, file_config.setup_secret });
+    defer allocator.free(pairing_url);
+
+    // Render QR code
+    const qr_mod = @import("qr.zig");
+    if (qr_mod.encode(pairing_url)) |qr_result| {
+        try qr_mod.renderTerminal(stdout, qr_result, "  ");
+        try stdout.print("\n", .{});
+    } else |_| {}
+
+    try stdout.print("  {s}\n\n", .{pairing_url});
     try stdout.flush();
 }
 
