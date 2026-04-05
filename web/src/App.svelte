@@ -21,34 +21,50 @@
   let connecting = $state(false);
   let authError = $state('');
   let pairingInput = $state('');
+  let waitingForDaemon = $state(false);
 
   const signalUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
 
   function handleAuthResult(msg: import('./lib/types').ServerMessage) {
     if (msg.type !== 'auth_result') return;
-    console.log('[App] auth_result received, success:', msg.success);
     connecting = false;
     if (msg.success) {
       if (msg.token) setStoredToken(msg.token as string);
       authReady = true;
       authRequired = false;
+      waitingForDaemon = false;
       authError = '';
-      console.log('[App] authReady=true, connecting=false');
     } else {
+      // Auth explicitly rejected — credentials are invalid
       clearStoredToken();
+      clearStoredPairingCode();
       authReady = false;
       authRequired = true;
-      authError = 'Authentication failed.';
+      waitingForDaemon = false;
+      authError = 'Authentication failed. Please re-pair.';
     }
   }
 
   onMount(() => {
-    const unsubscribe = rtc.onMessage(handleAuthResult);
+    const unsubAuth = rtc.onMessage(handleAuthResult);
+    const unsubSignal = rtc.onMessage((msg) => {
+      if (msg.type === 'signal_connected') {
+        // Signal reconnected, waiting for daemon
+        waitingForDaemon = true;
+        connecting = false;
+      } else if (msg.type === 'daemon_disconnected') {
+        waitingForDaemon = true;
+        authReady = false;
+      } else if (msg.type === 'auth_result' && msg.success) {
+        waitingForDaemon = false;
+      }
+    });
 
     void initializeAuth();
 
     return () => {
-      unsubscribe();
+      unsubAuth();
+      unsubSignal();
       rtc.disconnect();
     };
   });
@@ -71,17 +87,18 @@
       try {
         await rtc.connect(signalUrl, pairing.pairingCode);
         setStoredPairingCode(pairing.pairingCode);
+        setStoredToken(pairing.setupSecret); // store setup secret as token for re-auth
         if (await waitForOpen()) {
           rtc.authenticate(pairing.setupSecret);
         } else {
+          // Don't clear — daemon may come online later
           connecting = false;
-          authRequired = true;
-          authError = 'Connection timed out.';
+          waitingForDaemon = true;
         }
       } catch {
         connecting = false;
+        authError = 'Failed to connect to signal server.';
         authRequired = true;
-        authError = 'Failed to connect.';
       }
       return;
     }
@@ -96,18 +113,14 @@
         if (await waitForOpen()) {
           rtc.authenticate(storedToken);
         } else {
+          // Keep credentials, show waiting state
           connecting = false;
-          clearStoredToken();
-          clearStoredPairingCode();
-          authRequired = true;
-          authError = 'Connection timed out. Re-pair with Kite.';
+          waitingForDaemon = true;
         }
       } catch {
         connecting = false;
-        clearStoredToken();
-        clearStoredPairingCode();
+        authError = 'Failed to connect to signal server.';
         authRequired = true;
-        authError = 'Failed to connect.';
       }
       return;
     }
@@ -133,11 +146,12 @@
     try {
       await rtc.connect(signalUrl, code);
       setStoredPairingCode(code);
+      setStoredToken(secret);
       if (await waitForOpen()) {
         rtc.authenticate(secret);
       } else {
         connecting = false;
-        authError = 'Connection timed out.';
+        waitingForDaemon = true;
       }
     } catch {
       connecting = false;
@@ -163,6 +177,11 @@
     <section class="auth-card">
       <h2>Connecting...</h2>
       <p>Establishing secure connection to Kite.</p>
+    </section>
+  {:else if waitingForDaemon && !authReady}
+    <section class="auth-card">
+      <h2>Waiting for daemon...</h2>
+      <p>Connected to signal server. Waiting for Kite daemon to come online.</p>
     </section>
   {:else if authRequired && !authReady}
     <section class="auth-card">
