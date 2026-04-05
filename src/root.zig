@@ -11,6 +11,7 @@ pub const SessionManager = @import("session_manager.zig").SessionManager;
 pub const MessageQueue = @import("message_queue.zig").MessageQueue;
 pub const SignalClient = @import("signal_client.zig").SignalClient;
 pub const rtc = @import("rtc.zig");
+pub const qr = @import("qr.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
