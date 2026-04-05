@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zig](https://img.shields.io/badge/Zig-0.15.2-orange.svg)](https://ziglang.org/)
+<!-- [![Build Status](https://github.com/aneryu/kite/actions/workflows/ci.yml/badge.svg)](https://github.com/aneryu/kite/actions) -->
 
 > Remote controller for AI coding assistants from your phone.
 
