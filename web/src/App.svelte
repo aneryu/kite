@@ -12,6 +12,9 @@
     getStoredPairingCode,
     setStoredPairingCode,
     clearStoredPairingCode,
+    getStoredSecret,
+    setStoredSecret,
+    clearStoredSecret,
   } from './lib/auth';
 
   let currentView = $state<'list' | 'detail'>('list');
@@ -25,6 +28,8 @@
 
   const signalUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
 
+  let authRetried = false;
+
   function handleAuthResult(msg: import('./lib/types').ServerMessage) {
     if (msg.type !== 'auth_result') return;
     connecting = false;
@@ -34,14 +39,24 @@
       authRequired = false;
       waitingForDaemon = false;
       authError = '';
+      authRetried = false;
     } else {
-      // Auth explicitly rejected — credentials are invalid
+      // Session token failed — try setup secret as fallback
+      const secret = getStoredSecret();
+      if (secret && !authRetried) {
+        authRetried = true;
+        rtc.authenticate(secret);
+        return;
+      }
+      // Setup secret also failed — credentials are truly invalid
       clearStoredToken();
+      clearStoredSecret();
       clearStoredPairingCode();
       authReady = false;
       authRequired = true;
       waitingForDaemon = false;
       authError = 'Authentication failed. Please re-pair.';
+      authRetried = false;
     }
   }
 
@@ -87,7 +102,7 @@
       try {
         await rtc.connect(signalUrl, pairing.pairingCode);
         setStoredPairingCode(pairing.pairingCode);
-        setStoredToken(pairing.setupSecret); // store setup secret as token for re-auth
+        setStoredSecret(pairing.setupSecret);
         if (await waitForOpen()) {
           rtc.authenticate(pairing.setupSecret);
         } else {

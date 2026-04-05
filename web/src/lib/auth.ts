@@ -1,5 +1,6 @@
 const TOKEN_KEY = 'kite_session_token';
 const PAIRING_KEY = 'kite_pairing_code';
+const SECRET_KEY = 'kite_setup_secret';
 
 export function getStoredToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -31,6 +32,18 @@ export function parsePairingFromHash(): { pairingCode: string; setupSecret: stri
   const match = hash.match(/^#\/pair\/([a-z0-9]{6}):([a-f0-9]{64})$/);
   if (!match) return null;
   return { pairingCode: match[1], setupSecret: match[2] };
+}
+
+export function getStoredSecret(): string | null {
+  return localStorage.getItem(SECRET_KEY);
+}
+
+export function setStoredSecret(secret: string): void {
+  localStorage.setItem(SECRET_KEY, secret);
+}
+
+export function clearStoredSecret(): void {
+  localStorage.removeItem(SECRET_KEY);
 }
 
 export function clearPairingFromHash(): void {
