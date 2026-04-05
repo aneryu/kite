@@ -19,7 +19,7 @@ const Config = struct {
     command: []const u8 = "claude",
     attach_id: ?u64 = null,
     no_auth: bool = false,
-    signal_url: []const u8 = "ws://localhost:8080",
+    signal_url: []const u8 = "wss://relay.fun.dev",
     stun_server: []const u8 = "stun:stun.l.google.com:19302",
     turn_server: ?[]const u8 = null,
 };
@@ -76,7 +76,9 @@ fn parseCommand(arg: []const u8) ?Command {
 }
 
 const FileConfig = struct {
-    signal_url: []const u8 = "ws://localhost:8080",
+    signal_url: []const u8 = "wss://relay.fun.dev",
+    pairing_code: []const u8 = "",
+    setup_secret: []const u8 = "",
 };
 
 fn readConfigFile(allocator: std.mem.Allocator) ?FileConfig {
@@ -91,10 +93,33 @@ fn readConfigFile(allocator: std.mem.Allocator) ?FileConfig {
     defer allocator.free(contents);
 
     const parsed = std.json.parseFromSlice(FileConfig, allocator, contents, .{ .ignore_unknown_fields = true }) catch return null;
-    // Dupe the signal_url so it outlives the parsed value
     const url = allocator.dupe(u8, parsed.value.signal_url) catch return null;
+    const code = allocator.dupe(u8, parsed.value.pairing_code) catch return null;
+    const secret = allocator.dupe(u8, parsed.value.setup_secret) catch return null;
     parsed.deinit();
-    return FileConfig{ .signal_url = url };
+    return FileConfig{ .signal_url = url, .pairing_code = code, .setup_secret = secret };
+}
+
+fn writeConfigFile(allocator: std.mem.Allocator, config: FileConfig) void {
+    const home = std.posix.getenv("HOME") orelse return;
+    const config_dir = std.fmt.allocPrint(allocator, "{s}/.config/kite", .{home}) catch return;
+    defer allocator.free(config_dir);
+    const parent_dir = std.fmt.allocPrint(allocator, "{s}/.config", .{home}) catch return;
+    defer allocator.free(parent_dir);
+    std.fs.makeDirAbsolute(parent_dir) catch {};
+    std.fs.makeDirAbsolute(config_dir) catch {};
+
+    const config_path = std.fmt.allocPrint(allocator, "{s}/config.json", .{config_dir}) catch return;
+    defer allocator.free(config_path);
+
+    const escaped_url = protocol.jsonEscapeAllocPublic(allocator, config.signal_url) catch return;
+    defer allocator.free(escaped_url);
+    const config_json = std.fmt.allocPrint(allocator, "{{\"signal_url\":\"{s}\",\"pairing_code\":\"{s}\",\"setup_secret\":\"{s}\"}}\n", .{ escaped_url, config.pairing_code, config.setup_secret }) catch return;
+    defer allocator.free(config_json);
+
+    const file = std.fs.createFileAbsolute(config_path, .{}) catch return;
+    defer file.close();
+    file.writeAll(config_json) catch {};
 }
 
 // Module-level mutable state for the broadcast callback
@@ -110,10 +135,8 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var config = Config{};
 
     // Read config file defaults
-    if (readConfigFile(allocator)) |file_config| {
-        config.signal_url = file_config.signal_url;
-        // Note: file_config memory is leaked intentionally (lives for program duration)
-    }
+    var file_config = readConfigFile(allocator) orelse FileConfig{};
+    config.signal_url = file_config.signal_url;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -139,14 +162,30 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var stdout_writer = stdout_file.writer(&stdout_buf);
     const stdout = &stdout_writer.interface;
 
+    // Generate or load persistent pairing code and setup secret
+    var pairing_code: [6]u8 = undefined;
+    var setup_secret_hex: [64]u8 = undefined;
+
+    if (file_config.pairing_code.len == 6 and file_config.setup_secret.len == 64) {
+        @memcpy(&pairing_code, file_config.pairing_code[0..6]);
+        @memcpy(&setup_secret_hex, file_config.setup_secret[0..64]);
+    } else {
+        pairing_code = auth_mod.generatePairingCode();
+        var secret_bytes: [32]u8 = undefined;
+        std.crypto.random.bytes(&secret_bytes);
+        setup_secret_hex = std.fmt.bytesToHex(secret_bytes, .lower);
+        // Save to config
+        file_config.pairing_code = &pairing_code;
+        file_config.setup_secret = &setup_secret_hex;
+        file_config.signal_url = config.signal_url;
+        writeConfigFile(allocator, file_config);
+    }
+
     var auth = Auth.init();
     auth.disabled = config.no_auth;
+    auth.setSetupSecret(&setup_secret_hex);
 
-    // Parse signal URL to get host and port (ws://host:port)
     const signal_host, const signal_port = parseSignalUrl(config.signal_url);
-
-    // Generate pairing code for signal server registration
-    const pairing_code = auth_mod.generatePairingCode();
 
     try stdout.print("\n  kite daemon started\n", .{});
     try stdout.print("  ====================\n\n", .{});
@@ -156,8 +195,6 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (config.no_auth) {
         try stdout.print("  Auth disabled -- connect directly, no token required.\n\n", .{});
     } else {
-        const setup_hex = auth.getSetupTokenHex();
-        // Convert ws:// -> http://, wss:// -> https:// for the browser URL
         const http_url = if (std.mem.startsWith(u8, config.signal_url, "wss://"))
             try std.fmt.allocPrint(allocator, "https://{s}", .{config.signal_url[6..]})
         else if (std.mem.startsWith(u8, config.signal_url, "ws://"))
@@ -165,7 +202,9 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         else
             try allocator.dupe(u8, config.signal_url);
         defer allocator.free(http_url);
-        try auth_mod.renderQrCode(stdout, http_url, &pairing_code, &setup_hex);
+
+        try stdout.print("  Scan QR code or open this URL on your phone:\n", .{});
+        try stdout.print("  {s}/#/pair/{s}:{s}\n\n", .{ http_url, pairing_code, setup_secret_hex });
     }
     try stdout.print("  Use 'kite run' to create a session.\n\n", .{});
     try stdout.flush();
@@ -604,9 +643,9 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         return;
     };
 
-    // Try as setup token first (exchange for session token)
-    if (auth.validateSetupToken(token)) |session_token_hex| {
-        logStderr("[kite-auth] Setup token valid, sending session token", .{});
+    // Try as setup secret first (exchange for session token)
+    if (auth.validateSetupSecret(token)) |session_token_hex| {
+        logStderr("[kite-auth] Setup secret valid, sending session token", .{});
         const result = protocol.encodeAuthResult(allocator, true, &session_token_hex) catch return;
         defer allocator.free(result);
         if (global_rtc_peer) |peer| {
@@ -1154,7 +1193,7 @@ fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stdout = &stdout_writer.interface;
 
     // Parse --signal-url argument
-    var signal_url: []const u8 = "ws://localhost:8080";
+    var signal_url: []const u8 = "wss://relay.fun.dev";
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
@@ -1225,7 +1264,7 @@ fn printUsage() void {
         \\  kite help               Show this help
         \\
         \\Options for 'setup':
-        \\  --signal-url <URL>     Signal server URL (default: ws://localhost:8080)
+        \\  --signal-url <URL>     Signal server URL (default: wss://relay.fun.dev)
         \\
         \\Options for 'start':
         \\  --no-auth              Disable authentication (development only)
