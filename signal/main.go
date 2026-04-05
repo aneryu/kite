@@ -105,6 +105,8 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("[signal] %s first message: %s (parsed: type=%q code=%q role=%q)", ip, string(data), msg.Type, msg.PairingCode, msg.Role)
+
 	if msg.PairingCode == "" || msg.Role == "" {
 		conn.Send([]byte(`{"type":"error","error":"pairing_code and role required"}`))
 		return
