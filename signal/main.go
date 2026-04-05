@@ -20,7 +20,6 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// wsConn wraps a gorilla WebSocket connection to implement the Sender interface.
 type wsConn struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
@@ -38,24 +37,23 @@ func (w *wsConn) SendPing() error {
 	return w.conn.WriteMessage(websocket.PingMessage, nil)
 }
 
-// signalMsg is the initial message sent by a client to identify itself.
 type signalMsg struct {
-	Type        string `json:"type"`
-	PairingCode string `json:"pairing_code"`
+	Type        string          `json:"type"`
+	PairingCode string          `json:"pairing_code,omitempty"`
+	Role        string          `json:"role,omitempty"`
+	To          string          `json:"to,omitempty"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
 }
 
-// Handler handles HTTP and WebSocket requests for the signal server.
 type Handler struct {
-	rm       *RoomManager
+	tm       *TopicManager
 	staticFS http.Handler
 	mux      *http.ServeMux
 }
 
-// NewHandler creates a new Handler with the given RoomManager and static file directory.
-// If staticDir is empty, the embedded static files are used.
-func NewHandler(rm *RoomManager, staticDir string) http.Handler {
+func NewHandler(tm *TopicManager, staticDir string) http.Handler {
 	h := &Handler{
-		rm:  rm,
+		tm:  tm,
 		mux: http.NewServeMux(),
 	}
 
@@ -87,46 +85,52 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	// Read first message to determine client type
+	conn := &wsConn{conn: ws}
+	ip := clientIP(r)
+
+	// Read first message — must be a join
 	_, data, err := ws.ReadMessage()
 	if err != nil {
-		log.Printf("read first message: %v", err)
 		return
 	}
 
 	var msg signalMsg
 	if err := json.Unmarshal(data, &msg); err != nil {
-		ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","error":"invalid message"}`))
+		conn.Send([]byte(`{"type":"error","error":"invalid message"}`))
 		return
 	}
 
-	conn := &wsConn{conn: ws}
-
-	switch msg.Type {
-	case "register":
-		h.handleDaemon(ws, conn, msg.PairingCode)
-	case "join":
-		h.handleBrowser(ws, conn, msg.PairingCode, clientIP(r))
-	default:
-		conn.Send([]byte(`{"type":"error","error":"unknown message type"}`))
+	if msg.Type != "join" {
+		conn.Send([]byte(`{"type":"error","error":"first message must be join"}`))
+		return
 	}
-}
 
-func (h *Handler) handleDaemon(ws *websocket.Conn, conn *wsConn, pairingCode string) {
-	if err := h.rm.Register(pairingCode, conn); err != nil {
+	if msg.PairingCode == "" || msg.Role == "" {
+		conn.Send([]byte(`{"type":"error","error":"pairing_code and role required"}`))
+		return
+	}
+
+	memberID, members, err := h.tm.JoinWithIP(msg.PairingCode, msg.Role, conn, ip)
+	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"type": "error", "error": err.Error()})
 		conn.Send(errMsg)
 		return
 	}
-	defer h.rm.DaemonDisconnected(pairingCode)
+	defer h.tm.Disconnect(msg.PairingCode, memberID)
 
-	// Send registration confirmation
-	conn.Send([]byte(`{"type":"registered"}`))
+	// Send joined confirmation with member list
+	joinResp, _ := json.Marshal(map[string]interface{}{
+		"type":      "joined",
+		"member_id": memberID,
+		"members":   members,
+	})
+	conn.Send(joinResp)
+
+	log.Printf("[signal] %s joined topic %s as %s (id=%s)", ip, msg.PairingCode, msg.Role, memberID)
 
 	// Start ping ticker
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-
 	go func() {
 		for range ticker.C {
 			if err := conn.SendPing(); err != nil {
@@ -135,58 +139,33 @@ func (h *Handler) handleDaemon(ws *websocket.Conn, conn *wsConn, pairingCode str
 		}
 	}()
 
-	// Relay loop: forward messages from daemon to browser
+	// Message loop
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
-			log.Printf("[signal] daemon read error: %v", err)
+			log.Printf("[signal] %s read error: %v", memberID, err)
 			return
 		}
-		log.Printf("[signal] daemon->browser relay: %s", truncate(data, 120))
-		if err := h.rm.RelayFromDaemon(pairingCode, data); err != nil {
-			log.Printf("[signal] relay daemon->browser error: %v", err)
-			if err == ErrRoomNotFound {
-				return
+
+		var inMsg signalMsg
+		if err := json.Unmarshal(data, &inMsg); err != nil {
+			continue
+		}
+
+		switch inMsg.Type {
+		case "relay":
+			if inMsg.To == "" || inMsg.Payload == nil {
+				continue
 			}
-		}
-	}
-}
-
-func (h *Handler) handleBrowser(ws *websocket.Conn, conn *wsConn, pairingCode string, ip string) {
-	if err := h.rm.Join(pairingCode, conn, ip); err != nil {
-		errMsg, _ := json.Marshal(map[string]string{"type": "error", "error": err.Error()})
-		conn.Send(errMsg)
-		return
-	}
-	defer h.rm.BrowserDisconnected(pairingCode)
-
-	// Send join confirmation
-	conn.Send([]byte(`{"type":"joined"}`))
-
-	// Start ping ticker
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	go func() {
-		for range ticker.C {
-			if err := conn.SendPing(); err != nil {
-				return
+			if err := h.tm.Relay(msg.PairingCode, memberID, inMsg.To, inMsg.Payload); err != nil {
+				log.Printf("[signal] relay error: %v", err)
 			}
-		}
-	}()
-
-	// Relay loop: forward messages from browser to daemon
-	for {
-		_, data, err := ws.ReadMessage()
-		if err == nil {
-			log.Printf("[signal] browser->daemon relay: %s", truncate(data, 120))
-		}
-		if err != nil {
-			return
-		}
-		if err := h.rm.RelayFromBrowser(pairingCode, data); err != nil {
-			if err == ErrRoomNotFound {
-				return
+		case "broadcast":
+			if inMsg.Payload == nil {
+				continue
+			}
+			if err := h.tm.Broadcast(msg.PairingCode, memberID, inMsg.Payload); err != nil {
+				log.Printf("[signal] broadcast error: %v", err)
 			}
 		}
 	}
@@ -199,7 +178,6 @@ func truncate(data []byte, max int) string {
 	return string(data[:max]) + "..."
 }
 
-// clientIP extracts the client IP from the request, checking X-Forwarded-For first.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		return xff

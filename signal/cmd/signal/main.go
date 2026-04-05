@@ -15,18 +15,18 @@ func main() {
 	staticDir := flag.String("static", "", "static files directory (overrides embedded files)")
 	flag.Parse()
 
-	rm := signal.NewRoomManager()
+	tm := signal.NewTopicManager()
 
 	// Background cleanup goroutine
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			rm.CleanupStale()
+			tm.CleanupStale()
 		}
 	}()
 
-	handler := signal.NewHandler(rm, *staticDir)
+	handler := signal.NewHandler(tm, *staticDir)
 
 	addr := fmt.Sprintf(":%d", *port)
 	log.Printf("signal server listening on %s", addr)

@@ -1,17 +1,20 @@
 package signal
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"crypto/rand"
+	"encoding/hex"
 )
 
 var (
-	ErrRoomExists   = errors.New("room already exists")
-	ErrRoomNotFound = errors.New("room not found")
-	ErrRoomLocked   = errors.New("room is locked")
-	ErrRateLimited  = errors.New("rate limited")
-	ErrNoPeer       = errors.New("no peer connected")
+	ErrTopicNotFound  = errors.New("topic not found")
+	ErrMemberNotFound = errors.New("member not found")
+	ErrRateLimited    = errors.New("rate limited")
 )
 
 // Sender is the interface for sending data to a WebSocket connection.
@@ -19,13 +22,25 @@ type Sender interface {
 	Send(data []byte) error
 }
 
-// Room represents a signaling room pairing a daemon and a browser.
-type Room struct {
-	PairingCode string
-	Daemon      Sender
-	Browser     Sender
-	Locked      bool
-	LastActive  time.Time
+// MemberInfo is the public view of a member (returned in joined response).
+type MemberInfo struct {
+	ID   string `json:"id"`
+	Role string `json:"role"`
+}
+
+// Member represents a connected client in a topic.
+type Member struct {
+	ID   string
+	Role string
+	Conn Sender
+}
+
+// Topic represents a signaling channel identified by a pairing code.
+type Topic struct {
+	Code       string
+	Members    map[string]*Member
+	LastActive time.Time
+	EmptySince *time.Time // set when last member leaves, cleared on join
 }
 
 type rateLimitEntry struct {
@@ -33,188 +48,231 @@ type rateLimitEntry struct {
 	windowAt time.Time
 }
 
-// RoomManager manages signaling rooms with thread-safe access.
-type RoomManager struct {
-	mu    sync.Mutex
-	rooms map[string]*Room
+// TopicManager manages signaling topics with thread-safe access.
+type TopicManager struct {
+	mu     sync.Mutex
+	topics map[string]*Topic
 
-	roomTTL         time.Duration
+	topicTTL        time.Duration
 	maxJoinAttempts int
-
-	joinAttempts map[string]*rateLimitEntry // keyed by IP
+	joinAttempts    map[string]*rateLimitEntry
 }
 
-// NewRoomManager creates a new RoomManager with default settings.
-func NewRoomManager() *RoomManager {
-	return &RoomManager{
-		rooms:           make(map[string]*Room),
-		roomTTL:         10 * time.Minute,
+// NewTopicManager creates a new TopicManager with default settings.
+func NewTopicManager() *TopicManager {
+	return &TopicManager{
+		topics:          make(map[string]*Topic),
+		topicTTL:        5 * time.Minute,
 		maxJoinAttempts: 30,
 		joinAttempts:    make(map[string]*rateLimitEntry),
 	}
 }
 
-// Register creates a new room with the given pairing code and daemon sender.
-func (rm *RoomManager) Register(code string, daemon Sender) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
-	if _, exists := rm.rooms[code]; exists {
-		return ErrRoomExists
-	}
-
-	rm.rooms[code] = &Room{
-		PairingCode: code,
-		Daemon:      daemon,
-		LastActive:  time.Now(),
-	}
-	return nil
+func generateMemberID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
-// Join adds a browser to an existing room. Returns ErrRoomNotFound, ErrRoomLocked, or ErrRateLimited.
-func (rm *RoomManager) Join(code string, browser Sender, ip string) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+// Join adds a member to a topic. Creates the topic if it doesn't exist.
+// Returns the new member's ID and the list of existing members.
+func (tm *TopicManager) Join(code string, role string, conn Sender) (string, []MemberInfo, error) {
+	return tm.JoinWithIP(code, role, conn, "")
+}
 
-	if err := rm.checkRateLimit(ip); err != nil {
-		return err
+// JoinWithIP is like Join but also applies rate limiting by IP.
+func (tm *TopicManager) JoinWithIP(code string, role string, conn Sender, ip string) (string, []MemberInfo, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if ip != "" {
+		tm.recordAttempt(ip)
+		if err := tm.checkRateLimit(ip); err != nil {
+			return "", nil, err
+		}
 	}
 
-	room, exists := rm.rooms[code]
+	topic, exists := tm.topics[code]
 	if !exists {
-		rm.recordAttempt(ip)
-		return ErrRoomNotFound
+		topic = &Topic{
+			Code:    code,
+			Members: make(map[string]*Member),
+		}
+		tm.topics[code] = topic
 	}
 
-	if room.Locked && room.Browser != nil {
-		// Kick the old browser — new connection replaces it
-		room.Browser.Send([]byte(`{"type":"peer_replaced"}`))
+	// Clear empty timer on join
+	topic.EmptySince = nil
+	topic.LastActive = time.Now()
+
+	// Collect existing members before adding new one
+	existing := make([]MemberInfo, 0, len(topic.Members))
+	for _, m := range topic.Members {
+		existing = append(existing, MemberInfo{ID: m.ID, Role: m.Role})
 	}
 
-	room.Browser = browser
-	room.Locked = true
-	room.LastActive = time.Now()
+	// Create new member
+	id := generateMemberID()
+	topic.Members[id] = &Member{ID: id, Role: role, Conn: conn}
 
-	// Clear rate limit on successful join
-	delete(rm.joinAttempts, ip)
+	// Notify existing members
+	notification, _ := json.Marshal(map[string]string{
+		"type":      "member_joined",
+		"member_id": id,
+		"role":      role,
+	})
+	for _, m := range topic.Members {
+		if m.ID != id {
+			m.Conn.Send(notification)
+		}
+	}
 
-	// Notify daemon that browser joined
-	room.Daemon.Send([]byte(`{"type":"peer_joined"}`))
-
-	return nil
+	return id, existing, nil
 }
 
-// RelayFromBrowser forwards data from the browser to the daemon.
-func (rm *RoomManager) RelayFromBrowser(code string, data []byte) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+// Disconnect removes a member from a topic and notifies others.
+func (tm *TopicManager) Disconnect(code string, memberID string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 
-	room, exists := rm.rooms[code]
-	if !exists {
-		return ErrRoomNotFound
-	}
-	if room.Daemon == nil {
-		return ErrNoPeer
-	}
-
-	room.LastActive = time.Now()
-	return room.Daemon.Send(data)
-}
-
-// RelayFromDaemon forwards data from the daemon to the browser.
-func (rm *RoomManager) RelayFromDaemon(code string, data []byte) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
-	room, exists := rm.rooms[code]
-	if !exists {
-		return ErrRoomNotFound
-	}
-	if room.Browser == nil {
-		return ErrNoPeer
-	}
-
-	room.LastActive = time.Now()
-	return room.Browser.Send(data)
-}
-
-// DaemonDisconnected removes the room entirely and notifies the browser.
-func (rm *RoomManager) DaemonDisconnected(code string) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
-	room, exists := rm.rooms[code]
+	topic, exists := tm.topics[code]
 	if !exists {
 		return
 	}
 
-	if room.Browser != nil {
-		room.Browser.Send([]byte(`{"type":"peer_left"}`))
+	delete(topic.Members, memberID)
+
+	// Notify remaining members
+	notification, _ := json.Marshal(map[string]string{
+		"type":      "member_left",
+		"member_id": memberID,
+	})
+	for _, m := range topic.Members {
+		m.Conn.Send(notification)
 	}
 
-	delete(rm.rooms, code)
+	// Start TTL timer if topic is now empty
+	if len(topic.Members) == 0 {
+		now := time.Now()
+		topic.EmptySince = &now
+	}
+	topic.LastActive = time.Now()
 }
 
-// BrowserDisconnected removes the browser from the room and unlocks it.
-func (rm *RoomManager) BrowserDisconnected(code string) {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+// Relay sends data from one member to a specific other member.
+func (tm *TopicManager) Relay(code string, fromID string, toID string, data []byte) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 
-	room, exists := rm.rooms[code]
+	topic, exists := tm.topics[code]
 	if !exists {
-		return
+		return ErrTopicNotFound
 	}
 
-	if room.Daemon != nil {
-		room.Daemon.Send([]byte(`{"type":"peer_left"}`))
+	target, exists := topic.Members[toID]
+	if !exists {
+		return ErrMemberNotFound
 	}
 
-	room.Browser = nil
-	room.Locked = false
-	room.LastActive = time.Now()
+	// Wrap in relay envelope
+	envelope, _ := json.Marshal(map[string]interface{}{
+		"type":    "relay",
+		"from":    fromID,
+		"payload": json.RawMessage(data),
+	})
+	topic.LastActive = time.Now()
+	return target.Conn.Send(envelope)
 }
 
-// CleanupStale removes rooms that have been inactive longer than roomTTL.
-func (rm *RoomManager) CleanupStale() {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+// Broadcast sends data to all members in the topic except the sender.
+func (tm *TopicManager) Broadcast(code string, fromID string, data []byte) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	topic, exists := tm.topics[code]
+	if !exists {
+		return ErrTopicNotFound
+	}
+
+	envelope, _ := json.Marshal(map[string]interface{}{
+		"type":    "relay",
+		"from":    fromID,
+		"payload": json.RawMessage(data),
+	})
+
+	var lastErr error
+	for _, m := range topic.Members {
+		if m.ID != fromID {
+			if err := m.Conn.Send(envelope); err != nil {
+				lastErr = err
+			}
+		}
+	}
+	topic.LastActive = time.Now()
+	return lastErr
+}
+
+// GetMemberInfo returns info about a specific member.
+func (tm *TopicManager) GetMemberInfo(code string, memberID string) (*MemberInfo, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	topic, exists := tm.topics[code]
+	if !exists {
+		return nil, ErrTopicNotFound
+	}
+	m, exists := topic.Members[memberID]
+	if !exists {
+		return nil, ErrMemberNotFound
+	}
+	return &MemberInfo{ID: m.ID, Role: m.Role}, nil
+}
+
+// CleanupStale removes empty topics that have exceeded their TTL.
+func (tm *TopicManager) CleanupStale() {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 
 	now := time.Now()
-	for code, room := range rm.rooms {
-		if now.Sub(room.LastActive) > rm.roomTTL {
-			if room.Browser != nil {
-				room.Browser.Send([]byte(`{"type":"peer_left"}`))
-			}
-			delete(rm.rooms, code)
+	for code, topic := range tm.topics {
+		if topic.EmptySince != nil && now.Sub(*topic.EmptySince) > tm.topicTTL {
+			delete(tm.topics, code)
 		}
 	}
 }
 
-// checkRateLimit checks if an IP has exceeded join attempts. Must be called with mu held.
-func (rm *RoomManager) checkRateLimit(ip string) error {
-	entry, exists := rm.joinAttempts[ip]
+// TopicCount returns the number of active topics (for monitoring).
+func (tm *TopicManager) TopicCount() int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return len(tm.topics)
+}
+
+func (tm *TopicManager) checkRateLimit(ip string) error {
+	entry, exists := tm.joinAttempts[ip]
 	if !exists {
 		return nil
 	}
-
-	// Reset window if more than a minute has passed
 	if time.Since(entry.windowAt) > time.Minute {
-		delete(rm.joinAttempts, ip)
+		delete(tm.joinAttempts, ip)
 		return nil
 	}
-
-	if entry.count >= rm.maxJoinAttempts {
+	if entry.count > tm.maxJoinAttempts {
 		return ErrRateLimited
 	}
 	return nil
 }
 
-// recordAttempt increments the join attempt counter for an IP. Must be called with mu held.
-func (rm *RoomManager) recordAttempt(ip string) {
-	entry, exists := rm.joinAttempts[ip]
+func (tm *TopicManager) recordAttempt(ip string) {
+	entry, exists := tm.joinAttempts[ip]
 	if !exists || time.Since(entry.windowAt) > time.Minute {
-		rm.joinAttempts[ip] = &rateLimitEntry{count: 1, windowAt: time.Now()}
+		tm.joinAttempts[ip] = &rateLimitEntry{count: 1, windowAt: time.Now()}
 		return
 	}
 	entry.count++
+}
+
+// String returns a debug representation of a topic.
+func (t *Topic) String() string {
+	return fmt.Sprintf("Topic{code=%s, members=%d}", t.Code, len(t.Members))
 }
