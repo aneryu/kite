@@ -226,8 +226,8 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     };
     defer signal_client.deinit();
-    signal_client.register() catch |err| {
-        logStderr("[kite] Failed to register with signal server: {}", .{err});
+    signal_client.joinTopic() catch |err| {
+        logStderr("[kite] Failed to join signal topic: {}", .{err});
         return;
     };
 
