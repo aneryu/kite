@@ -712,6 +712,18 @@ fn handleDataChannelMessage(
         const rows = msg.rows orelse return;
         const cols = msg.cols orelse return;
         _ = session_manager.resizeSession(session_id, rows, cols);
+    } else if (std.mem.eql(u8, msg.@"type", "request_snapshot")) {
+        const session_id = msg.session_id orelse return;
+        logStderr("[kite-dc] request_snapshot for session {d}", .{session_id});
+        if (session_manager.getTerminalSnapshot(allocator, session_id)) |history| {
+            defer allocator.free(history);
+            logStderr("[kite-dc] snapshot size: {d} bytes", .{history.len});
+            if (history.len > 0) {
+                const encoded = protocol.encodeTerminalOutput(allocator, history, session_id) catch return;
+                defer allocator.free(encoded);
+                broadcastViaRtc(encoded);
+            }
+        }
     } else if (std.mem.eql(u8, msg.@"type", "prompt_response")) {
         const session_id = msg.session_id orelse 1;
         const text = msg.text orelse msg.data orelse "";
@@ -724,21 +736,6 @@ fn handleDataChannelMessage(
         const result = protocol.encodeDeleteSessionResult(allocator, session_id, true) catch return;
         defer allocator.free(result);
         broadcastViaRtc(result);
-    } else if (std.mem.eql(u8, msg.@"type", "request_snapshot")) {
-        const session_id = msg.session_id orelse return;
-        logStderr("[kite-dc] request_snapshot for session {d}", .{session_id});
-        if (session_manager.getTerminalSnapshot(allocator, session_id)) |history| {
-            defer allocator.free(history);
-            logStderr("[kite-dc] snapshot size: {d} bytes", .{history.len});
-            if (history.len > 0) {
-                const encoded = protocol.encodeTerminalOutput(allocator, history, session_id) catch return;
-                defer allocator.free(encoded);
-                logStderr("[kite-dc] sending encoded snapshot: {d} bytes", .{encoded.len});
-                broadcastViaRtc(encoded);
-            }
-        } else {
-            logStderr("[kite-dc] no snapshot available for session {d}", .{session_id});
-        }
     } else if (std.mem.eql(u8, msg.@"type", "ping")) {
         broadcastViaRtc(protocol.encodePong());
     }

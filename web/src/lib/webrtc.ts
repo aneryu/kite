@@ -248,6 +248,8 @@ export class RtcManager {
   private sendRaw(msg: Record<string, unknown>): void {
     if (this.dc?.readyState === 'open') {
       this.dc.send(JSON.stringify(msg));
+    } else {
+      console.warn('[RTC] sendRaw DROPPED (dc not open):', msg.type);
     }
   }
 }
