@@ -1,4 +1,4 @@
-module github.com/anthropics/kite/signal
+module github.com/aneryu/kite/signal
 
 go 1.16
 

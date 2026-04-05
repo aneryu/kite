@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/anthropics/kite/signal"
+	"github.com/aneryu/kite/signal"
 )
 
 func main() {
