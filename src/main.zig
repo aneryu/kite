@@ -36,6 +36,7 @@ const Command = enum {
 pub fn main() !void {
     log.init();
     defer log.deinit();
+    cli.init();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -45,12 +46,12 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        printUsage();
+        cli.printRootHelp();
         return;
     }
 
     const cmd = parseCommand(args[1]) orelse {
-        printUsage();
+        cli.printUnknownCommand(args[1]);
         return;
     };
 
@@ -60,7 +61,7 @@ pub fn main() !void {
         .hook => try runHook(allocator, args[2..]),
         .setup => try runSetup(allocator, args[2..]),
         .status => try runStatus(allocator),
-        .help => printUsage(),
+        .help => cli.printRootHelp(),
     }
 }
 
@@ -170,11 +171,18 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--no-auth")) {
+        if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
+            cli.printStartHelp();
+            return;
+        } else if (std.mem.eql(u8, args[i], "--no-auth")) {
             config.no_auth = true;
         } else if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
             config.signal_url = args[i + 1];
             i += 1;
+        } else if (std.mem.startsWith(u8, args[i], "--")) {
+            const start_opts = [_][]const u8{ "--no-auth", "--signal-url" };
+            cli.printUnknownOption(args[i], &start_opts, "start");
+            return;
         }
     }
 
@@ -836,12 +844,19 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--cmd") and i + 1 < args.len) {
+        if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
+            cli.printRunHelp();
+            return;
+        } else if (std.mem.eql(u8, args[i], "--cmd") and i + 1 < args.len) {
             config.command = args[i + 1];
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--attach") and i + 1 < args.len) {
             config.attach_id = std.fmt.parseInt(u64, args[i + 1], 10) catch null;
             i += 1;
+        } else if (std.mem.startsWith(u8, args[i], "--")) {
+            const run_opts = [_][]const u8{ "--cmd", "--attach" };
+            cli.printUnknownOption(args[i], &run_opts, "run");
+            return;
         }
     }
 
@@ -1203,6 +1218,7 @@ fn handlePermissionRequestIpc(allocator: std.mem.Allocator, session_manager: *Se
 }
 
 const log = @import("log.zig");
+const cli = @import("cli.zig");
 fn logStderr(comptime fmt: []const u8, args: anytype) void {
     log.debug(fmt, args);
 }
@@ -1276,15 +1292,21 @@ fn runHook(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--event") and i + 1 < args.len) {
+        if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
+            cli.printHookHelp();
+            return;
+        } else if (std.mem.eql(u8, args[i], "--event") and i + 1 < args.len) {
             event_name = args[i + 1];
             i += 1;
+        } else if (std.mem.startsWith(u8, args[i], "--")) {
+            const hook_opts = [_][]const u8{"--event"};
+            cli.printUnknownOption(args[i], &hook_opts, "hook");
+            return;
         }
     }
 
     if (event_name.len == 0) {
-        const stderr_file = std.fs.File.stderr();
-        _ = stderr_file.write("Usage: kite hook --event <EventName>\n") catch {};
+        cli.printMissingOption("--event <name>", "hook", "kite hook --event <name>");
         return;
     }
 
@@ -1317,9 +1339,16 @@ fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var signal_url: []const u8 = "wss://kite.fun.dev/remote";
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
+        if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
+            cli.printSetupHelp();
+            return;
+        } else if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
             signal_url = args[i + 1];
             i += 1;
+        } else if (std.mem.startsWith(u8, args[i], "--")) {
+            const setup_opts = [_][]const u8{"--signal-url"};
+            cli.printUnknownOption(args[i], &setup_opts, "setup");
+            return;
         }
     }
 
@@ -1411,34 +1440,6 @@ fn runStatus(allocator: std.mem.Allocator) !void {
 
     try stdout.print("  {s}\n\n", .{pairing_url});
     try stdout.flush();
-}
-
-fn printUsage() void {
-    const stdout_file = std.fs.File.stdout();
-    _ = stdout_file.write(
-        \\
-        \\kite - AI Coding Assistant Remote Controller
-        \\
-        \\Usage:
-        \\  kite start [options]    Start the kite daemon
-        \\  kite run [options]      Create a new session in the daemon
-        \\  kite hook --event <E>   Handle a Claude Code hook event (internal)
-        \\  kite setup [options]    Configure kite and show Claude Code hooks config
-        \\  kite status             Check if kite daemon is running
-        \\  kite help               Show this help
-        \\
-        \\Options for 'setup':
-        \\  --signal-url <URL>     Signal server URL (default: wss://kite.fun.dev/remote)
-        \\
-        \\Options for 'start':
-        \\  --no-auth              Disable authentication (development only)
-        \\  --signal-url <URL>     Signal server URL (overrides config file)
-        \\
-        \\Options for 'run':
-        \\  --cmd <CMD>       Command to run (default: claude)
-        \\  --attach <ID>     Attach to existing session instead of creating new one
-        \\
-    ) catch {};
 }
 
 test {
