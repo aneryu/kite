@@ -1,13 +1,75 @@
-:root {
+/* === Theme Definitions === */
+
+/* Cyber Dark (default) */
+:root,
+[data-theme="cyber-dark"] {
   --bg: #0a0a0a;
   --fg: #e0e0e0;
   --accent: #4fc3f7;
   --card-bg: #1a1a1a;
+  --card-bg-alpha: rgba(255, 255, 255, 0.05);
   --border: #333;
+  --border-glow: rgba(79, 195, 247, 0.2);
+  --glow-color: rgba(79, 195, 247, 0.4);
   --danger: #ef5350;
   --success: #66bb6a;
   --warn: #ffa726;
+  --text-secondary: #9aa0a6;
+  --text-muted: #666;
 }
+
+/* Cyber Light */
+[data-theme="cyber-light"] {
+  --bg: #f0f2f5;
+  --fg: #1a1a1a;
+  --accent: #0288d1;
+  --card-bg: #ffffff;
+  --card-bg-alpha: rgba(255, 255, 255, 0.7);
+  --border: #d0d0d0;
+  --border-glow: rgba(2, 136, 209, 0.2);
+  --glow-color: rgba(2, 136, 209, 0.3);
+  --danger: #d32f2f;
+  --success: #388e3c;
+  --warn: #f57c00;
+  --text-secondary: #666;
+  --text-muted: #999;
+}
+
+/* Monokai */
+[data-theme="monokai"] {
+  --bg: #272822;
+  --fg: #f8f8f2;
+  --accent: #f92672;
+  --card-bg: #3e3d32;
+  --card-bg-alpha: rgba(62, 61, 50, 0.85);
+  --border: #555;
+  --border-glow: rgba(249, 38, 114, 0.2);
+  --glow-color: rgba(249, 38, 114, 0.4);
+  --danger: #f92672;
+  --success: #a6e22e;
+  --warn: #e6db74;
+  --text-secondary: #a6a68a;
+  --text-muted: #75715e;
+}
+
+/* Nord */
+[data-theme="nord"] {
+  --bg: #2e3440;
+  --fg: #eceff4;
+  --accent: #88c0d0;
+  --card-bg: #3b4252;
+  --card-bg-alpha: rgba(59, 66, 82, 0.85);
+  --border: #4c566a;
+  --border-glow: rgba(136, 192, 208, 0.2);
+  --glow-color: rgba(136, 192, 208, 0.4);
+  --danger: #bf616a;
+  --success: #a3be8c;
+  --warn: #ebcb8b;
+  --text-secondary: #d8dee9;
+  --text-muted: #7b88a1;
+}
+
+/* === Global Reset === */
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -17,10 +79,52 @@ body {
   color: var(--fg);
   height: 100dvh;
   overflow: hidden;
+  touch-action: manipulation;
+  transition: background-color 0.2s, color 0.2s;
 }
 
 #app {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+}
+
+/* === Global Focus Styles === */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* === Global Button Styles === */
+
+button {
+  cursor: pointer;
+  transition: transform 0.1s, background-color 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+button:active {
+  transform: scale(0.96);
+}
+
+/* === Reduced Motion === */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+  }
+}
+
+/* === Glassmorphism Fallback === */
+
+@supports not (backdrop-filter: blur(1px)) {
+  .glass {
+    background: var(--card-bg) !important;
+  }
 }
