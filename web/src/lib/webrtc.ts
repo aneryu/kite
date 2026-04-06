@@ -16,6 +16,11 @@ export class RtcManager {
   private stunServer: string = 'stun:stun.l.google.com:19302';
   private storedToken: string | null = null;
 
+  // Recovery state
+  private recovering = false;
+  private recoveryTimeout: number | null = null;
+  private visibilityHandler: (() => void) | null = null;
+
   async connect(signalUrl: string, pairingCode: string, stunServer?: string): Promise<void> {
     if (stunServer) this.stunServer = stunServer;
     this.signal = new SignalClient(signalUrl, pairingCode, 'browser');
@@ -23,27 +28,38 @@ export class RtcManager {
     this.signal.onMessage((msg) => {
       switch (msg.type) {
         case 'joined':
-          // Check if daemon is already in the topic
           this.daemonMemberID = null;
           if (msg.members) {
             const daemon = msg.members.find((m) => m.role === 'daemon');
             if (daemon) {
               this.daemonMemberID = daemon.id;
-              this.startWebRTC();
+              if (!this.pc) {
+                this.startWebRTC();
+              }
+              // If we're recovering and signal just reconnected, re-attempt ICE restart
+              if (this.recovering && this.pc) {
+                this.attemptIceRestart();
+              }
             }
-            // else: no daemon yet, wait for member_joined
           }
           this.handlers.forEach((h) => h({ type: 'signal_connected' }));
           break;
         case 'member_joined':
           if (msg.role === 'daemon' && msg.member_id) {
             this.daemonMemberID = msg.member_id;
-            this.startWebRTC();
+            if (this.recovering) {
+              // Daemon came back — do full rebuild as part of recovery
+              this.cancelRecovery();
+              this.fullRebuild();
+            } else if (!this.pc) {
+              this.startWebRTC();
+            }
           }
           break;
         case 'member_left':
           if (msg.member_id === this.daemonMemberID) {
-            this.handlePeerLeft();
+            this.cancelRecovery();
+            this.teardownPeer();
             this.daemonMemberID = null;
             this.handlers.forEach((h) => h({ type: 'daemon_disconnected' }));
           }
@@ -60,6 +76,7 @@ export class RtcManager {
     });
 
     await this.signal.connect();
+    this.installVisibilityHandler();
   }
 
   onMessage(handler: MessageHandler): () => void {
@@ -102,6 +119,8 @@ export class RtcManager {
   }
 
   disconnect(): void {
+    this.cancelRecovery();
+    this.removeVisibilityHandler();
     this.stopPing();
     this.dc?.close();
     this.dc = null;
@@ -113,10 +132,122 @@ export class RtcManager {
     this.daemonMemberID = null;
   }
 
-  // --- Private ---
+  // --- Parallel Recovery ---
+
+  private startRecovery(): void {
+    if (this.recovering) return;
+    this.recovering = true;
+    console.log('[RTC] Starting parallel recovery');
+
+    // Path 1: Probe existing DC — send ping + request_sync
+    if (this.dc?.readyState === 'open') {
+      this.sendRaw({ type: 'ping' });
+      this.sendRaw({ type: 'request_sync' });
+    }
+
+    // Path 2: ICE restart (needs signal to be connected)
+    if (this.pc && this.signal?.isConnected() && this.daemonMemberID) {
+      this.attemptIceRestart();
+    }
+
+    // Path 3: Ensure signal is alive (triggers re-join which leads to ICE restart)
+    if (this.signal && !this.signal.isConnected()) {
+      this.signal.forceReconnect();
+    }
+
+    // Fallback timeout: 15s → full rebuild
+    this.recoveryTimeout = window.setTimeout(() => {
+      if (this.recovering) {
+        console.log('[RTC] Recovery timeout, falling back to full rebuild');
+        this.cancelRecovery();
+        this.fullRebuild();
+      }
+    }, 15_000);
+  }
+
+  private cancelRecovery(): void {
+    this.recovering = false;
+    if (this.recoveryTimeout !== null) {
+      clearTimeout(this.recoveryTimeout);
+      this.recoveryTimeout = null;
+    }
+  }
+
+  private onRecoverySuccess(): void {
+    if (!this.recovering) return;
+    console.log('[RTC] Recovery succeeded');
+    this.cancelRecovery();
+    // Request full state sync
+    this.sendRaw({ type: 'request_sync' });
+  }
+
+  private attemptIceRestart(): void {
+    if (!this.pc || !this.signal || !this.daemonMemberID) return;
+    console.log('[RTC] Attempting ICE restart');
+
+    this.remoteDescriptionSet = false;
+    this.pendingCandidates = [];
+
+    this.pc.createOffer({ iceRestart: true })
+      .then((offer) => this.pc!.setLocalDescription(offer))
+      .then(() => {
+        if (this.pc?.localDescription && this.signal && this.daemonMemberID) {
+          this.signal.relay(this.daemonMemberID, {
+            type: 'sdp_offer',
+            sdp: this.pc.localDescription.sdp,
+            sdp_type: this.pc.localDescription.type,
+          });
+        }
+      })
+      .catch((err) => console.error('[RTC] ICE restart offer error:', err));
+  }
+
+  private fullRebuild(): void {
+    console.log('[RTC] Full rebuild');
+    this.teardownPeer();
+    if (this.daemonMemberID) {
+      this.startWebRTC();
+    }
+  }
+
+  private teardownPeer(): void {
+    this.stopPing();
+    this.dc?.close();
+    this.dc = null;
+    this.pc?.close();
+    this.pc = null;
+    this.remoteDescriptionSet = false;
+    this.pendingCandidates = [];
+    this.authenticated = false;
+    this.handlers.forEach((h) => h({ type: 'disconnected' }));
+  }
+
+  // --- Visibility ---
+
+  private installVisibilityHandler(): void {
+    this.removeVisibilityHandler();
+    this.visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        if (this.dc?.readyState === 'open') {
+          this.sendRaw({ type: 'request_sync' });
+        } else if (this.pc) {
+          this.startRecovery();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', this.visibilityHandler);
+  }
+
+  private removeVisibilityHandler(): void {
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+  }
+
+  // --- WebRTC Setup ---
 
   private startWebRTC(): void {
-    // Clean up any existing connection
     this.stopPing();
     this.dc?.close();
     this.pc?.close();
@@ -130,8 +261,9 @@ export class RtcManager {
     this.dc.onopen = () => {
       console.log('[RTC] DataChannel open');
       this.startPing();
-      // Auto re-authenticate if we have a stored token
-      if (this.storedToken) {
+      if (this.recovering) {
+        this.onRecoverySuccess();
+      } else if (this.storedToken) {
         this.sendRaw({ type: 'auth', token: this.storedToken });
       }
     };
@@ -140,7 +272,10 @@ export class RtcManager {
       try {
         const raw = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
         const msg: ServerMessage = JSON.parse(raw);
-        if (msg.type === 'pong') return;
+        if (msg.type === 'pong') {
+          if (this.recovering) this.onRecoverySuccess();
+          return;
+        }
         this.handlers.forEach((h) => h(msg));
       } catch (e) {
         console.error('[RTC] DC message parse error:', e);
@@ -166,7 +301,9 @@ export class RtcManager {
       const state = this.pc?.connectionState;
       console.log('[RTC] Connection state:', state);
       if (state === 'disconnected' || state === 'failed') {
-        this.handlePeerLeft();
+        this.startRecovery();
+      } else if (state === 'connected' && this.recovering) {
+        // ICE restart succeeded at transport level, wait for DC to re-open
       }
     };
 
@@ -218,17 +355,6 @@ export class RtcManager {
     } catch (err) {
       console.error('[RTC] addIceCandidate error:', err);
     }
-  }
-
-  private handlePeerLeft(): void {
-    this.stopPing();
-    this.dc?.close();
-    this.dc = null;
-    this.pc?.close();
-    this.pc = null;
-    this.remoteDescriptionSet = false;
-    this.pendingCandidates = [];
-    this.handlers.forEach((h) => h({ type: 'disconnected' }));
   }
 
   private startPing(): void {
