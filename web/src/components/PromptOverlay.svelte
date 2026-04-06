@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { options = [], summary = '', onsubmit }: { options?: string[]; summary?: string; onsubmit: (text: string) => void } = $props();
+  let { options = [], summary = '', onsubmit, bottomOffset = 0 }: { options?: string[]; summary?: string; onsubmit: (text: string) => void; bottomOffset?: number } = $props();
   let inputText = $state('');
 
   function handleSubmit() {
@@ -11,9 +11,12 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
   }
+
+  // Actions bar is 44px tall; overlay sits above it
+  const ACTIONS_HEIGHT = 44;
 </script>
 
-<div class="overlay">
+<div class="overlay" style:bottom="{bottomOffset + ACTIONS_HEIGHT}px">
   <div class="prompt-bar glass">
     {#if summary}
       <div class="summary">{summary}</div>
@@ -25,22 +28,24 @@
         {/each}
       </div>
     {/if}
-    <div class="input-row">
-      <input type="text" bind:value={inputText} onkeydown={handleKeydown} placeholder="Type a response..." />
-      <button class="send-btn" onclick={handleSubmit}>Send</button>
-    </div>
+    {#if options.length === 0}
+      <div class="input-row">
+        <input type="text" bind:value={inputText} onkeydown={handleKeydown} placeholder="Type a response..." />
+        <button class="send-btn" onclick={handleSubmit}>Send</button>
+      </div>
+    {/if}
   </div>
 </div>
 
 <style>
-  .overlay { position: absolute; bottom: 0; left: 0; right: 0; z-index: 20; padding-bottom: env(safe-area-inset-bottom, 0); }
+  .overlay { position: fixed; left: 0; right: 0; z-index: 20; padding-bottom: env(safe-area-inset-bottom, 0); }
   .prompt-bar {
     background: var(--card-bg-alpha); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     border-top: 2px solid var(--warn); padding: 0.75rem;
     transition: background-color 0.2s, border-color 0.2s;
   }
   .summary { font-size: 0.85rem; color: var(--fg); margin-bottom: 0.5rem; max-height: 3rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
-  .options { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+  .options { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   .opt-btn {
     padding: 0.4rem 1rem; border: 1px solid var(--accent); border-radius: 20px;
     background: transparent; color: var(--accent); font-size: 0.85rem;
