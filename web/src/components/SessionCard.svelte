@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SessionInfo } from '../lib/types';
   import { sessionStore } from '../stores/sessions';
-  import { rtc } from '../lib/webrtc';
+  import { transport } from '../lib/connection';
 
   let { session, onterminal }: { session: SessionInfo; onterminal: () => void } = $props();
   let inputText = $state('');
@@ -21,11 +21,11 @@
       const updated = { ...selectedAnswers, [questionText]: opt };
       selectedAnswers = updated;
       if (Object.keys(updated).length >= totalQuestions) {
-        rtc.sendPromptResponse(JSON.stringify(updated), session.id);
+        transport.send({ type: 'prompt_response', text: JSON.stringify(updated), session_id: session.id });
         selectedAnswers = {};
       }
     } else {
-      rtc.sendPromptResponse(opt, session.id);
+      transport.send({ type: 'prompt_response', text: opt, session_id: session.id });
     }
   }
 
@@ -47,7 +47,7 @@
     if (!inputText.trim()) return;
     const text = inputText.trim();
     inputText = '';
-    rtc.sendPromptResponse(text, session.id);
+    transport.send({ type: 'prompt_response', text, session_id: session.id });
   }
 
   function handleKeydown(e: KeyboardEvent) {

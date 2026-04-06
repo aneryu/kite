@@ -1,4 +1,4 @@
-import { rtc } from '../lib/webrtc';
+import { transport } from '../lib/connection';
 import type { SessionInfo, ServerMessage, QuestionInfo } from '../lib/types';
 
 type Listener = () => void;
@@ -128,4 +128,4 @@ class SessionStore {
 }
 
 export const sessionStore = new SessionStore();
-rtc.onMessage((msg) => sessionStore.handleMessage(msg));
+transport.onMessage((msg) => sessionStore.handleMessage(msg));

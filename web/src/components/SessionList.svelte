@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import SessionCard from './SessionCard.svelte';
   import { sessionStore } from '../stores/sessions';
-  import { rtc } from '../lib/webrtc';
+  import { transport } from '../lib/connection';
 
   let { onselect }: { onselect: (id: number) => void } = $props();
   let sessions = $state(sessionStore.sorted());
@@ -13,7 +13,7 @@
   });
 
   function handleCreate() {
-    rtc.createSession();
+    transport.send({ type: 'create_session', data: 'claude' });
   }
 </script>
 

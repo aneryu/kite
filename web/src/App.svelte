@@ -1,7 +1,7 @@
 <script lang="ts">
   import SessionList from './components/SessionList.svelte';
   import SessionDetail from './components/SessionDetail.svelte';
-  import { rtc } from './lib/webrtc';
+  import { transport, connect, authenticate, disconnect, isConnected, onAppEvent } from './lib/connection';
   import { onMount } from 'svelte';
   import { initTheme, applyTheme, getStoredTheme, THEME_IDS, THEME_LABELS, type ThemeId } from './lib/theme';
   import {
@@ -50,7 +50,7 @@
       const secret = getStoredSecret();
       if (secret && !authRetried) {
         authRetried = true;
-        rtc.authenticate(secret);
+        authenticate(secret);
         return;
       }
       clearStoredToken();
@@ -67,15 +67,18 @@
   onMount(() => {
     const cleanupTheme = initTheme();
 
-    const unsubAuth = rtc.onMessage(handleAuthResult);
-    const unsubSignal = rtc.onMessage((msg) => {
+    const unsubAuth = transport.onMessage(handleAuthResult);
+    const unsubSignal = onAppEvent((msg) => {
       if (msg.type === 'signal_connected') {
         waitingForDaemon = true;
         connecting = false;
       } else if (msg.type === 'daemon_disconnected') {
         waitingForDaemon = true;
         authReady = false;
-      } else if (msg.type === 'auth_result' && msg.success) {
+      }
+    });
+    const unsubAuthSuccess = transport.onMessage((msg) => {
+      if (msg.type === 'auth_result' && msg.success) {
         waitingForDaemon = false;
       }
     });
@@ -93,14 +96,15 @@
       cleanupTheme();
       unsubAuth();
       unsubSignal();
-      rtc.disconnect();
+      unsubAuthSuccess();
+      disconnect();
       document.removeEventListener('click', handleClickOutside);
     };
   });
 
   async function waitForOpen(timeout = 10000): Promise<boolean> {
     const start = Date.now();
-    while (!rtc.isOpen()) {
+    while (!isConnected()) {
       if (Date.now() - start > timeout) return false;
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -113,11 +117,11 @@
       clearPairingFromHash();
       connecting = true;
       try {
-        await rtc.connect(signalUrl, pairing.pairingCode);
+        await connect(signalUrl, pairing.pairingCode);
         setStoredPairingCode(pairing.pairingCode);
         setStoredSecret(pairing.setupSecret);
         if (await waitForOpen()) {
-          rtc.authenticate(pairing.setupSecret);
+          authenticate(pairing.setupSecret);
         } else {
           connecting = false;
           waitingForDaemon = true;
@@ -134,9 +138,9 @@
     if (storedToken && storedCode) {
       connecting = true;
       try {
-        await rtc.connect(signalUrl, storedCode);
+        await connect(signalUrl, storedCode);
         if (await waitForOpen()) {
-          rtc.authenticate(storedToken);
+          authenticate(storedToken);
         } else {
           connecting = false;
           waitingForDaemon = true;
@@ -165,11 +169,11 @@
     const [, code, secret] = match;
     connecting = true;
     try {
-      await rtc.connect(signalUrl, code);
+      await connect(signalUrl, code);
       setStoredPairingCode(code);
       setStoredToken(secret);
       if (await waitForOpen()) {
-        rtc.authenticate(secret);
+        authenticate(secret);
       } else {
         connecting = false;
         waitingForDaemon = true;

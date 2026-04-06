@@ -4,7 +4,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import { Unicode11Addon } from '@xterm/addon-unicode11';
   import '@xterm/xterm/css/xterm.css';
-  import { rtc } from '../lib/webrtc';
+  import { transport } from '../lib/connection';
   import type { ServerMessage } from '../lib/types';
 
   let { sessionId }: { sessionId: number } = $props();
@@ -54,13 +54,13 @@
       return bytes;
     }
 
-    unsubscribe = rtc.onMessage((msg: ServerMessage) => {
+    unsubscribe = transport.onMessage((msg: ServerMessage) => {
       if (msg.type === 'terminal_output' && msg.session_id === sessionId && msg.data) {
         terminal.write(base64ToBytes(msg.data));
       }
     });
 
-    terminal.onData((data: string) => { rtc.sendTerminalInput(data, sessionId); });
+    terminal.onData((data: string) => { transport.send({ type: 'terminal_input', data, session_id: sessionId }); });
 
     let snapshotRequested = false;
     function doFitAndResize() {
@@ -73,10 +73,10 @@
         requestAnimationFrame(doFitAndResize);
         return;
       }
-      rtc.sendResize(terminal.cols, terminal.rows, sessionId);
+      transport.send({ type: 'resize', cols: terminal.cols, rows: terminal.rows, session_id: sessionId });
       if (!snapshotRequested) {
         snapshotRequested = true;
-        rtc.requestSnapshot(sessionId);
+        transport.send({ type: 'request_snapshot', session_id: sessionId });
       }
     }
     resizeObserver = new ResizeObserver((entries) => {
