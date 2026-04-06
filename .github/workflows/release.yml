@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            artifact: kite-darwin-arm64
+          - os: macos-13
+            arch: amd64
+            artifact: kite-darwin-amd64
+          - os: ubuntu-24.04
+            arch: amd64
+            artifact: kite-linux-amd64
+          - os: ubuntu-24.04
+            arch: arm64
+            artifact: kite-linux-arm64
+            cross: true
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build web UI
+        run: cd web && npm ci && npm run build
+
+      # macOS: install libdatachannel via Homebrew
+      - name: Install libdatachannel (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libdatachannel
+
+      # Linux: build libdatachannel from source (static)
+      - name: Build libdatachannel (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libssl-dev
+          git clone --depth 1 --recurse-submodules https://github.com/paullouisageneau/libdatachannel.git /tmp/libdatachannel
+          cd /tmp/libdatachannel
+          cmake -B build -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build build -j$(nproc)
+          sudo cmake --install build
+
+      # Native build (non-cross)
+      - name: Build kite (native)
+        if: ${{ !matrix.cross }}
+        run: |
+          LIB_PATH=${{ runner.os == 'macOS' && '/opt/homebrew' || '/usr/local' }}
+          zig build -Doptimize=ReleaseSafe -Dlibdatachannel-path=$LIB_PATH
+
+      # Cross-compile for Linux arm64
+      - name: Build kite (cross-compile arm64)
+        if: ${{ matrix.cross }}
+        run: |
+          zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-linux-gnu -Dlibdatachannel-path=/usr/local
+
+      - name: Package
+        run: |
+          cd zig-out/bin
+          tar czf ${{ matrix.artifact }}.tar.gz kite
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: zig-out/bin/${{ matrix.artifact }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          generate_release_notes: true
