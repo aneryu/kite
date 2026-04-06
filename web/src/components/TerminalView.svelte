@@ -13,12 +13,23 @@
   let fitAddon: FitAddon;
   let unsubscribe: (() => void) | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let themeObserver: MutationObserver | null = null;
+
+  function readCssTheme(): { background: string; foreground: string; cursor: string } {
+    const style = getComputedStyle(document.documentElement);
+    return {
+      background: style.getPropertyValue('--bg').trim() || '#0a0a0a',
+      foreground: style.getPropertyValue('--fg').trim() || '#e0e0e0',
+      cursor: style.getPropertyValue('--accent').trim() || '#4fc3f7',
+    };
+  }
 
   onMount(async () => {
+    const cssTheme = readCssTheme();
     terminal = new Terminal({
       fontSize: 14,
       fontFamily: "'Hack Nerd Font Mono', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', monospace",
-      theme: { background: '#0a0a0a', foreground: '#e0e0e0', cursor: '#4fc3f7' },
+      theme: cssTheme,
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: true,
@@ -41,7 +52,6 @@
       return bytes;
     }
 
-    // Register handler BEFORE requesting snapshot to avoid race condition
     unsubscribe = rtc.onMessage((msg: ServerMessage) => {
       if (msg.type === 'terminal_output' && msg.session_id === sessionId && msg.data) {
         terminal.write(base64ToBytes(msg.data));
@@ -50,23 +60,41 @@
 
     terminal.onData((data: string) => { rtc.sendTerminalInput(data, sessionId); });
 
-    // Use ResizeObserver to fit and request snapshot only after the container has layout dimensions.
-    // Calling fitAddon.fit() before the container is laid out results in 0-dimension terminal (black screen).
     let snapshotRequested = false;
-    resizeObserver = new ResizeObserver(() => {
+    function doFitAndResize() {
+      const rect = containerEl.getBoundingClientRect();
+      console.log('[TerminalView] doFitAndResize: container rect=', rect.width, 'x', rect.height);
       fitAddon.fit();
+      console.log('[TerminalView] after fit: cols=', terminal.cols, 'rows=', terminal.rows);
+      if (terminal.cols === 0 || terminal.rows === 0) {
+        console.log('[TerminalView] cols/rows is 0, retrying next frame');
+        requestAnimationFrame(doFitAndResize);
+        return;
+      }
       rtc.sendResize(terminal.cols, terminal.rows, sessionId);
       if (!snapshotRequested) {
         snapshotRequested = true;
         rtc.requestSnapshot(sessionId);
       }
+    }
+    resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      console.log('[TerminalView] ResizeObserver fired: contentRect=', entry.contentRect.width, 'x', entry.contentRect.height);
+      doFitAndResize();
     });
     resizeObserver.observe(containerEl);
+
+    // Watch for theme changes (data-theme attribute on <html>)
+    themeObserver = new MutationObserver(() => {
+      terminal.options.theme = readCssTheme();
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   });
 
   onDestroy(() => {
     unsubscribe?.();
     resizeObserver?.disconnect();
+    themeObserver?.disconnect();
     terminal?.dispose();
   });
 </script>
