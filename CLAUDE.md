@@ -30,6 +30,12 @@ Key components:
 - **Web UI** (`web.zig`): Single-page mobile app embedded as comptime string literal, built on xterm.js
 - **Main** (`main.zig`): CLI parsing, event loop polling PTY master + stdin, spawns HTTP and IPC threads
 
+## Debug Logging
+
+设置 `KITE_DEBUG=1` 环境变量启用调试日志。日志同时输出到 stderr 和 `/tmp/kite.log`。未设置该变量时无任何日志输出。
+
+统一日志模块为 `log.zig`，各模块通过 `log.debug(fmt, args)` 输出日志。
+
 ## Zig Conventions (0.15.2)
 
 - `std.fs.File.stdout()`, `.writer(&buf)`, `.interface` field/method

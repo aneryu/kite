@@ -15,3 +15,4 @@ Thumbs.db
 
 # Signal server binary
 signal/signal
+signal/static

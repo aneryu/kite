@@ -5,11 +5,9 @@ const session_mod = @import("session.zig");
 const Session = session_mod.Session;
 const protocol = @import("protocol.zig");
 
+const log = @import("log.zig");
 fn logStderr(comptime fmt: []const u8, args: anytype) void {
-    const stderr = std.fs.File.stderr();
-    const out = std.fmt.allocPrint(std.heap.page_allocator, fmt ++ "\n", args) catch return;
-    defer std.heap.page_allocator.free(out);
-    _ = stderr.write(out) catch {};
+    log.debug(fmt, args);
 }
 
 pub const PendingAsk = struct {

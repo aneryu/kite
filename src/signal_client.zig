@@ -1,13 +1,9 @@
 const std = @import("std");
 const MessageQueue = @import("message_queue.zig").MessageQueue;
 
+const log = @import("log.zig");
 fn logStderr(comptime fmt: []const u8, args: anytype) void {
-    const stderr_file = std.fs.File.stderr();
-    var buf: [4096]u8 = undefined;
-    var writer = stderr_file.writer(&buf);
-    const w = &writer.interface;
-    w.print(fmt ++ "\n", args) catch {};
-    w.flush() catch {};
+    log.debug(fmt, args);
 }
 
 /// Minimal WebSocket client for connecting to the signaling server.
