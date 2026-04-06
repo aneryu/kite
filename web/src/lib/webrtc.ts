@@ -1,19 +1,25 @@
 import type { ServerMessage } from './types';
-import { SignalClient } from './signal';
+import type { Transport, TransportState, MessageHandler as TransportMessageHandler, StateHandler } from './transport';
+import type { SignalClient } from './signal';
 
-type MessageHandler = (msg: ServerMessage) => void;
+type AppEventHandler = (msg: ServerMessage) => void;
 
-export class RtcManager {
+export class WebRtcTransport implements Transport {
+  readonly name = 'webrtc';
+  readonly priority = 2;
+
   private pc: RTCPeerConnection | null = null;
   private dc: RTCDataChannel | null = null;
   private signal: SignalClient | null = null;
-  private handlers: MessageHandler[] = [];
+  private appHandlers: AppEventHandler[] = [];
+  private msgHandlers: TransportMessageHandler[] = [];
+  private stateHandlers: StateHandler[] = [];
   private authenticated: boolean = false;
   private pingInterval: number | null = null;
   private pendingCandidates: { candidate: string; mid: string }[] = [];
   private remoteDescriptionSet = false;
   private daemonMemberID: string | null = null;
-  private stunServer: string = 'stun:stun.l.google.com:19302';
+  private iceServers: string[] = [];
   private storedToken: string | null = null;
 
   // Recovery state
@@ -21,97 +27,19 @@ export class RtcManager {
   private recoveryTimeout: number | null = null;
   private visibilityHandler: (() => void) | null = null;
 
-  async connect(signalUrl: string, pairingCode: string, stunServer?: string): Promise<void> {
-    if (stunServer) this.stunServer = stunServer;
-    this.signal = new SignalClient(signalUrl, pairingCode, 'browser');
+  // --- Transport interface methods ---
 
-    this.signal.onMessage((msg) => {
-      switch (msg.type) {
-        case 'joined':
-          this.daemonMemberID = null;
-          if (msg.members) {
-            const daemon = msg.members.find((m) => m.role === 'daemon');
-            if (daemon) {
-              this.daemonMemberID = daemon.id;
-              if (!this.pc) {
-                this.startWebRTC();
-              }
-              // If we're recovering and signal just reconnected, re-attempt ICE restart
-              if (this.recovering && this.pc) {
-                this.attemptIceRestart();
-              }
-            }
-          }
-          this.handlers.forEach((h) => h({ type: 'signal_connected' }));
-          break;
-        case 'member_joined':
-          if (msg.role === 'daemon' && msg.member_id) {
-            this.daemonMemberID = msg.member_id;
-            if (this.recovering) {
-              // Daemon came back — do full rebuild as part of recovery
-              this.cancelRecovery();
-              this.fullRebuild();
-            } else if (!this.pc) {
-              this.startWebRTC();
-            }
-          }
-          break;
-        case 'member_left':
-          if (msg.member_id === this.daemonMemberID) {
-            this.cancelRecovery();
-            this.teardownPeer();
-            this.daemonMemberID = null;
-            this.handlers.forEach((h) => h({ type: 'daemon_disconnected' }));
-          }
-          break;
-        case 'relay':
-          if (msg.payload) {
-            this.handleRelayedMessage(msg.payload);
-          }
-          break;
-        case 'error':
-          console.error('[RTC] Signal error:', msg.error);
-          break;
-      }
-    });
-
-    await this.signal.connect();
-    this.installVisibilityHandler();
+  async connect(): Promise<void> {
+    // No-op: WebRTC connection is initiated by startWebRTC() called externally
+    // after signal client is set up by connection.ts
   }
 
-  onMessage(handler: MessageHandler): () => void {
-    this.handlers.push(handler);
-    return () => { this.handlers = this.handlers.filter((h) => h !== handler); };
-  }
-
-  authenticate(token: string): void {
-    this.storedToken = token;
-    this.authenticated = true;
-    this.sendRaw({ type: 'auth', token });
-  }
-
-  sendTerminalInput(data: string, sessionId: number): void {
-    this.sendRaw({ type: 'terminal_input', data, session_id: sessionId });
-  }
-
-  sendResize(cols: number, rows: number, sessionId: number): void {
-    this.sendRaw({ type: 'resize', cols, rows, session_id: sessionId });
-  }
-
-  requestSnapshot(sessionId: number): void {
-    this.sendRaw({ type: 'request_snapshot', session_id: sessionId });
-  }
-
-  sendPromptResponse(text: string, sessionId: number): void {
-    this.sendRaw({ type: 'prompt_response', text, session_id: sessionId });
-  }
-
-  createSession(command?: string): void {
-    this.sendRaw({ type: 'create_session', data: command || 'claude' });
-  }
-
-  deleteSession(sessionId: number): void {
-    this.sendRaw({ type: 'delete_session', session_id: sessionId });
+  send(data: string): void {
+    if (this.dc?.readyState === 'open') {
+      this.dc.send(data);
+    } else {
+      console.warn('[RTC] send DROPPED (dc not open)');
+    }
   }
 
   isOpen(): boolean {
@@ -126,15 +54,148 @@ export class RtcManager {
     this.dc = null;
     this.pc?.close();
     this.pc = null;
-    this.signal?.disconnect();
     this.signal = null;
     this.authenticated = false;
     this.daemonMemberID = null;
   }
 
+  onMessage(handler: TransportMessageHandler): () => void {
+    this.msgHandlers.push(handler);
+    return () => { this.msgHandlers = this.msgHandlers.filter((h) => h !== handler); };
+  }
+
+  onStateChange(handler: StateHandler): () => void {
+    this.stateHandlers.push(handler);
+    return () => { this.stateHandlers = this.stateHandlers.filter((h) => h !== handler); };
+  }
+
+  // --- App event handler (for signal_connected, daemon_disconnected, disconnected) ---
+
+  onAppEvent(handler: AppEventHandler): () => void {
+    this.appHandlers.push(handler);
+    return () => { this.appHandlers = this.appHandlers.filter((h) => h !== handler); };
+  }
+
+  // --- Public setter methods (called by connection.ts) ---
+
+  setSignal(signal: SignalClient): void {
+    this.signal = signal;
+  }
+
+  setDaemonMemberID(id: string): void {
+    this.daemonMemberID = id;
+  }
+
+  setIceServers(servers: string[]): void {
+    this.iceServers = servers;
+  }
+
+  setStoredToken(token: string): void {
+    this.storedToken = token;
+    this.authenticated = true;
+  }
+
+  // --- Public methods for external orchestration ---
+
+  handleRelayedMessage(payload: Record<string, unknown>): void {
+    const type = payload.type as string;
+    if (type === 'sdp_answer') {
+      this.handleSdpAnswer(payload.sdp as string, payload.sdp_type as RTCSdpType);
+    } else if (type === 'ice_candidate') {
+      this.handleRemoteCandidate(payload.candidate as string, payload.mid as string);
+    }
+  }
+
+  startWebRTC(): void {
+    this.stopPing();
+    this.dc?.close();
+    this.pc?.close();
+    this.remoteDescriptionSet = false;
+    this.pendingCandidates = [];
+
+    const servers = this.iceServers.length > 0
+      ? this.iceServers
+      : ['stun:stun.l.google.com:19302'];
+    const rtcIceServers: RTCIceServer[] = servers.map((s) => {
+      if (s.startsWith('turn:')) {
+        const match = s.match(/^turn:([^:]+):([^@]+)@(.+)$/);
+        if (match) {
+          return { urls: `turn:${match[3]}`, username: match[1], credential: match[2] };
+        }
+      }
+      return { urls: s };
+    });
+    this.pc = new RTCPeerConnection({ iceServers: rtcIceServers });
+    this.dc = this.pc.createDataChannel('kite', { ordered: true });
+
+    this.dc.onopen = () => {
+      console.log('[RTC] DataChannel open');
+      this.startPing();
+      this.notifyState('open');
+      if (this.recovering) {
+        this.onRecoverySuccess();
+      } else if (this.storedToken) {
+        this.sendRaw({ type: 'auth', token: this.storedToken });
+      }
+    };
+
+    this.dc.onmessage = (ev) => {
+      try {
+        const raw = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
+        const msg: ServerMessage = JSON.parse(raw);
+        if (msg.type === 'pong') {
+          if (this.recovering) this.onRecoverySuccess();
+          return;
+        }
+        this.msgHandlers.forEach((h) => h(msg));
+      } catch (e) {
+        console.error('[RTC] DC message parse error:', e);
+      }
+    };
+
+    this.dc.onclose = () => {
+      console.log('[RTC] DataChannel closed');
+      this.stopPing();
+      this.notifyState('closed');
+    };
+
+    this.pc.onicecandidate = (ev) => {
+      if (ev.candidate && this.signal && this.daemonMemberID) {
+        this.signal.relay(this.daemonMemberID, {
+          type: 'ice_candidate',
+          candidate: ev.candidate.candidate,
+          mid: ev.candidate.sdpMid || '',
+        });
+      }
+    };
+
+    this.pc.onconnectionstatechange = () => {
+      const state = this.pc?.connectionState;
+      console.log('[RTC] Connection state:', state);
+      if (state === 'disconnected' || state === 'failed') {
+        this.startRecovery();
+      } else if (state === 'connected' && this.recovering) {
+        // ICE restart succeeded at transport level, wait for DC to re-open
+      }
+    };
+
+    this.pc.createOffer()
+      .then((offer) => this.pc!.setLocalDescription(offer))
+      .then(() => {
+        if (this.pc?.localDescription && this.signal && this.daemonMemberID) {
+          this.signal.relay(this.daemonMemberID, {
+            type: 'sdp_offer',
+            sdp: this.pc.localDescription.sdp,
+            sdp_type: this.pc.localDescription.type,
+          });
+        }
+      })
+      .catch((err) => console.error('[RTC] Offer error:', err));
+  }
+
   // --- Parallel Recovery ---
 
-  private startRecovery(): void {
+  startRecovery(): void {
     if (this.recovering) return;
     this.recovering = true;
     console.log('[RTC] Starting parallel recovery');
@@ -181,7 +242,7 @@ export class RtcManager {
     this.sendRaw({ type: 'request_sync' });
   }
 
-  private attemptIceRestart(): void {
+  attemptIceRestart(): void {
     if (!this.pc || !this.signal || !this.daemonMemberID) return;
     console.log('[RTC] Attempting ICE restart');
 
@@ -219,12 +280,13 @@ export class RtcManager {
     this.remoteDescriptionSet = false;
     this.pendingCandidates = [];
     this.authenticated = false;
-    this.handlers.forEach((h) => h({ type: 'disconnected' }));
+    this.notifyState('closed');
+    this.appHandlers.forEach((h) => h({ type: 'disconnected' }));
   }
 
   // --- Visibility ---
 
-  private installVisibilityHandler(): void {
+  installVisibilityHandler(): void {
     this.removeVisibilityHandler();
     this.visibilityHandler = () => {
       if (document.visibilityState === 'visible') {
@@ -238,96 +300,17 @@ export class RtcManager {
     document.addEventListener('visibilitychange', this.visibilityHandler);
   }
 
-  private removeVisibilityHandler(): void {
+  removeVisibilityHandler(): void {
     if (this.visibilityHandler) {
       document.removeEventListener('visibilitychange', this.visibilityHandler);
       this.visibilityHandler = null;
     }
   }
 
-  // --- WebRTC Setup ---
+  // --- Private helpers ---
 
-  private startWebRTC(): void {
-    this.stopPing();
-    this.dc?.close();
-    this.pc?.close();
-    this.remoteDescriptionSet = false;
-    this.pendingCandidates = [];
-
-    const iceServers: RTCIceServer[] = [{ urls: this.stunServer }];
-    this.pc = new RTCPeerConnection({ iceServers });
-    this.dc = this.pc.createDataChannel('kite', { ordered: true });
-
-    this.dc.onopen = () => {
-      console.log('[RTC] DataChannel open');
-      this.startPing();
-      if (this.recovering) {
-        this.onRecoverySuccess();
-      } else if (this.storedToken) {
-        this.sendRaw({ type: 'auth', token: this.storedToken });
-      }
-    };
-
-    this.dc.onmessage = (ev) => {
-      try {
-        const raw = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data);
-        const msg: ServerMessage = JSON.parse(raw);
-        if (msg.type === 'pong') {
-          if (this.recovering) this.onRecoverySuccess();
-          return;
-        }
-        this.handlers.forEach((h) => h(msg));
-      } catch (e) {
-        console.error('[RTC] DC message parse error:', e);
-      }
-    };
-
-    this.dc.onclose = () => {
-      console.log('[RTC] DataChannel closed');
-      this.stopPing();
-    };
-
-    this.pc.onicecandidate = (ev) => {
-      if (ev.candidate && this.signal && this.daemonMemberID) {
-        this.signal.relay(this.daemonMemberID, {
-          type: 'ice_candidate',
-          candidate: ev.candidate.candidate,
-          mid: ev.candidate.sdpMid || '',
-        });
-      }
-    };
-
-    this.pc.onconnectionstatechange = () => {
-      const state = this.pc?.connectionState;
-      console.log('[RTC] Connection state:', state);
-      if (state === 'disconnected' || state === 'failed') {
-        this.startRecovery();
-      } else if (state === 'connected' && this.recovering) {
-        // ICE restart succeeded at transport level, wait for DC to re-open
-      }
-    };
-
-    this.pc.createOffer()
-      .then((offer) => this.pc!.setLocalDescription(offer))
-      .then(() => {
-        if (this.pc?.localDescription && this.signal && this.daemonMemberID) {
-          this.signal.relay(this.daemonMemberID, {
-            type: 'sdp_offer',
-            sdp: this.pc.localDescription.sdp,
-            sdp_type: this.pc.localDescription.type,
-          });
-        }
-      })
-      .catch((err) => console.error('[RTC] Offer error:', err));
-  }
-
-  private handleRelayedMessage(payload: Record<string, unknown>): void {
-    const type = payload.type as string;
-    if (type === 'sdp_answer') {
-      this.handleSdpAnswer(payload.sdp as string, payload.sdp_type as RTCSdpType);
-    } else if (type === 'ice_candidate') {
-      this.handleRemoteCandidate(payload.candidate as string, payload.mid as string);
-    }
+  private notifyState(state: TransportState): void {
+    this.stateHandlers.forEach((h) => h(state));
   }
 
   private async handleSdpAnswer(sdp: string, sdpType: RTCSdpType): Promise<void> {
@@ -372,12 +355,6 @@ export class RtcManager {
   }
 
   private sendRaw(msg: Record<string, unknown>): void {
-    if (this.dc?.readyState === 'open') {
-      this.dc.send(JSON.stringify(msg));
-    } else {
-      console.warn('[RTC] sendRaw DROPPED (dc not open):', msg.type);
-    }
+    this.send(JSON.stringify(msg));
   }
 }
-
-export const rtc = new RtcManager();
