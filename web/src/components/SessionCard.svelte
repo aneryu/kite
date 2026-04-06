@@ -212,13 +212,21 @@
 <style>
   /* Card layout with left state bar */
   .card {
-    display: flex; width: 100%; overflow: hidden;
-    background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+    display: flex; width: 100%; overflow: hidden; position: relative;
+    background: var(--card-bg);
+    border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 4px 12px rgba(0,0,0,0.1);
     color: var(--fg); font-family: inherit; font-size: inherit;
     transition: border-color 0.15s, box-shadow 0.2s;
   }
-  .card.waiting { border-color: var(--warn); box-shadow: 0 0 16px rgba(255, 167, 38, 0.12); }
-  .card.running { border-color: var(--border-glow); }
+  /* Top highlight line */
+  .card::after {
+    content: ''; position: absolute; top: 0; left: 12px; right: 12px; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+    pointer-events: none;
+  }
+  .card.waiting { border-color: var(--warn); box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 0 20px rgba(255, 167, 38, 0.1); }
+  .card.running { border-color: var(--border-glow); box-shadow: 0 1px 3px rgba(0,0,0,0.2), 0 4px 12px rgba(0,0,0,0.1); }
 
   /* Left accent bar */
   .state-bar { width: 4px; flex-shrink: 0; border-radius: 10px 0 0 10px; }
@@ -260,11 +268,12 @@
   .meta-spacer { flex: 1; }
   .terminal-btn {
     display: flex; align-items: center; gap: 0.3rem;
-    padding: 0.25rem 0.65rem; border: 1px solid var(--accent); border-radius: 6px;
-    background: transparent; color: var(--accent); font-size: 0.7rem;
+    padding: 0.25rem 0.65rem; border: 1px solid var(--border-glow); border-radius: 6px;
+    background: rgba(255,255,255,0.03); color: var(--accent); font-size: 0.7rem;
     font-family: monospace; min-height: 30px;
+    box-shadow: 0 0 8px rgba(0,0,0,0.15);
   }
-  .terminal-btn:active { background: var(--accent); color: #000; }
+  .terminal-btn:active { background: var(--accent); color: #000; border-color: var(--accent); }
   .terminal-btn svg { flex-shrink: 0; }
 
   /* Expandable sections */

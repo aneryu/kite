@@ -42,10 +42,11 @@
   .empty-sub { color: var(--text-muted); font-size: 0.85rem; text-align: center; }
   .empty-sub code { color: var(--accent); }
   .fab {
-    position: fixed; bottom: 1.5rem; right: 1.5rem; width: 52px; height: 52px;
-    border-radius: 50%; border: none; background: var(--accent); color: #000;
-    font-size: 1.5rem; font-weight: 700; z-index: 10;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.4), 0 0 16px var(--glow-color);
+    position: fixed; bottom: 1.5rem; right: 1.5rem; width: 48px; height: 48px;
+    border-radius: 50%; border: none; color: #000;
+    font-size: 1.4rem; font-weight: 700; z-index: 10;
+    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #000));
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3), 0 4px 16px var(--glow-color);
   }
 
   @media (min-width: 640px) {

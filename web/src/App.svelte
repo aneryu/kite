@@ -271,8 +271,14 @@
   header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 0.2rem 0.5rem; padding-top: calc(0.2rem + env(safe-area-inset-top, 0px));
-    background: var(--card-bg); border-bottom: 1px solid var(--border); flex-shrink: 0;
-    transition: background-color 0.2s, border-color 0.2s;
+    background: var(--card-bg); flex-shrink: 0;
+    border-bottom: none; position: relative;
+    transition: background-color 0.2s;
+  }
+  header::after {
+    content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-glow), var(--accent), var(--border-glow), transparent);
+    opacity: 0.6;
   }
   .brand {
     font-family: 'Orbitron', sans-serif; font-size: 0.85rem; font-weight: 700;
