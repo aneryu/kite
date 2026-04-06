@@ -20,7 +20,6 @@ const Config = struct {
     attach_id: ?u64 = null,
     no_auth: bool = false,
     signal_url: []const u8 = "wss://kite.fun.dev/remote",
-    stun_server: []const u8 = "stun:stun.l.google.com:19302",
     turn_server: ?[]const u8 = null,
 };
 
@@ -143,6 +142,13 @@ fn broadcastViaRtc(data: []const u8) void {
     var it = global_peers.iterator();
     while (it.next()) |entry| {
         entry.value_ptr.*.send(data) catch {};
+    }
+}
+
+fn markAllPeersAuthenticated() void {
+    var it = global_peers.iterator();
+    while (it.next()) |entry| {
+        entry.value_ptr.*.authenticated = true;
     }
 }
 
@@ -274,15 +280,18 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Connect to signal server
     var signal_client = SignalClient.connect(allocator, signal_host, signal_port, "/ws", &signal_queue, &pairing_code) catch |err| {
         logStderr("[kite] Failed to connect to signal server {s}:{d}: {}", .{ signal_host, signal_port, err });
+        printStatus("  Signal server connection failed\n");
         return;
     };
     defer signal_client.deinit();
     signal_client.joinTopic() catch |err| {
         logStderr("[kite] Failed to join signal topic: {}", .{err});
+        printStatus("  Failed to join signal topic\n");
         return;
     };
 
     logStderr("[kite] Connected to signal server {s}:{d}", .{ signal_host, signal_port });
+    printStatus("  Signal server connected\n");
 
     // Spawn signal read loop thread
     const signal_thread = std.Thread.spawn(.{}, SignalClient.readLoop, .{&signal_client}) catch |err| {
@@ -299,7 +308,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try stdout.flush();
 
     // Initialize libdatachannel logger
-    rtc_mod.initLogger(3); // RTC_LOG_WARNING
+    rtc_mod.initLogger(2); // RTC_LOG_ERROR
 
     // Main event loop — poll all queues
     while (true) {
@@ -336,7 +345,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             defer state_queue.freeBatch(state_msgs);
             for (state_msgs) |msg| {
                 logStderr("[kite-loop] state msg: {s}", .{msg[0..@min(msg.len, 200)]});
-                handleRtcStateMessage(allocator, msg, &signal_client);
+                handleRtcStateMessage(allocator, msg, &signal_client, &session_manager, &auth);
             }
         }
 
@@ -476,7 +485,6 @@ fn createPeerForMember(
     };
     peer.* = RtcPeer.init(allocator, data_queue, state_queue, key);
     peer.setupPeerConnection(.{
-        .stun_server = config.stun_server,
         .turn_server = config.turn_server,
     }) catch {
         peer.deinit();
@@ -539,6 +547,8 @@ fn handleRtcStateMessage(
     allocator: std.mem.Allocator,
     raw: []const u8,
     signal_client: *SignalClient,
+    session_manager: *SessionManager,
+    auth: *Auth,
 ) void {
     const parsed = std.json.parseFromSlice(struct {
         @"type": []const u8,
@@ -590,10 +600,29 @@ fn handleRtcStateMessage(
             logStderr("[kite-rtc] Failed to send ice_candidate relay: {}", .{err});
         };
     } else if (std.mem.eql(u8, msg.@"type", "state_change")) {
-        logStderr("[kite-rtc] State change ({s}): {s}", .{ msg.member_id orelse "unknown", msg.state orelse "unknown" });
+        const state = msg.state orelse "unknown";
+        logStderr("[kite-rtc] State change ({s}): {s}", .{ msg.member_id orelse "unknown", state });
+        // Print user-visible connection status
+        if (std.mem.eql(u8, state, "connected")) {
+            printStatus("  WebRTC connected\n");
+        } else if (std.mem.eql(u8, state, "failed")) {
+            printStatus("  WebRTC connection failed\n");
+        } else if (std.mem.eql(u8, state, "disconnected")) {
+            printStatus("  WebRTC disconnected\n");
+        }
     } else if (std.mem.eql(u8, msg.@"type", "dc_open")) {
         logStderr("[kite-rtc] DataChannel opened for {s}!", .{msg.member_id orelse "unknown"});
-        // Don't send sessions_sync here — wait until auth succeeds
+        printStatus("  Browser connected\n");
+        // If peer was previously authenticated (ICE restart), auto-sync
+        if (msg.member_id) |mid| {
+            if (global_peers.get(mid)) |peer| {
+                if (peer.authenticated) {
+                    logStderr("[kite-rtc] Peer {s} already authenticated, auto-syncing", .{mid});
+                    sendSessionsSync(allocator, session_manager, auth);
+                    sendTerminalSnapshots(allocator, session_manager);
+                }
+            }
+        }
     }
 }
 
@@ -772,6 +801,10 @@ fn handleDataChannelMessage(
         broadcastViaRtc(result);
     } else if (std.mem.eql(u8, msg.@"type", "ping")) {
         broadcastViaRtc(protocol.encodePong());
+    } else if (std.mem.eql(u8, msg.@"type", "request_sync")) {
+        logStderr("[kite-dc] request_sync received", .{});
+        sendSessionsSync(allocator, session_manager, auth);
+        sendTerminalSnapshots(allocator, session_manager);
     }
 }
 
@@ -780,6 +813,7 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         const result = protocol.encodeAuthResult(allocator, true, "") catch return;
         defer allocator.free(result);
         broadcastViaRtc(result);
+        markAllPeersAuthenticated();
         return;
     }
 
@@ -798,6 +832,8 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         broadcastViaRtc(result);
         // Send sessions_sync + terminal snapshots after successful auth
         sendSessionsSync(allocator, session_manager, auth);
+        sendTerminalSnapshots(allocator, session_manager);
+        markAllPeersAuthenticated();
         return;
     }
 
@@ -809,6 +845,8 @@ fn handleAuthMessage(allocator: std.mem.Allocator, msg: protocol.ClientMessage, 
         broadcastViaRtc(result);
         // Send sessions_sync + terminal snapshots after successful auth
         sendSessionsSync(allocator, session_manager, auth);
+        sendTerminalSnapshots(allocator, session_manager);
+        markAllPeersAuthenticated();
         return;
     }
 
@@ -849,6 +887,7 @@ fn handleSigwinch(_: c_int) callconv(.c) void {
 
 fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var config = Config{};
+    var positional_cmd: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -873,6 +912,16 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
             const run_opts = [_][]const u8{ "--cmd", "--attach" };
             cli.printUnknownOption(args[i], &run_opts, "run");
             return;
+        } else {
+            // Positional argument: treat as command (with its args)
+            positional_cmd = args[i];
+        }
+    }
+
+    // Positional command takes precedence if --cmd was not explicitly set
+    if (positional_cmd) |cmd| {
+        if (std.mem.eql(u8, config.command, "claude")) {
+            config.command = cmd;
         }
     }
 
@@ -1237,6 +1286,11 @@ const log = @import("log.zig");
 const cli = @import("cli.zig");
 fn logStderr(comptime fmt: []const u8, args: anytype) void {
     log.debug(fmt, args);
+}
+
+fn printStatus(msg: []const u8) void {
+    const f = std.fs.File.stderr();
+    _ = f.write(msg) catch {};
 }
 
 const HOOK_LOG_PATH = "/tmp/kite-hooks.jsonl";
