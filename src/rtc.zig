@@ -23,8 +23,14 @@ fn checkResult(result: c_int) RtcError!void {
     };
 }
 
+pub const stun_servers = [_][]const u8{
+    "stun:stun.qq.com:3478",
+    "stun:stun.miwifi.com:3478",
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302",
+};
+
 pub const RtcConfig = struct {
-    stun_server: []const u8 = "stun:stun.l.google.com:19302",
     turn_server: ?[]const u8 = null,
 };
 
@@ -35,6 +41,7 @@ pub const RtcPeer = struct {
     state_queue: *MessageQueue,
     allocator: std.mem.Allocator,
     member_id: []const u8 = "",
+    authenticated: bool = false,
 
     /// Initialize RtcPeer fields (pc, dc remain -1).
     /// Call `setupPeerConnection` after the RtcPeer is at its final memory location.
@@ -56,14 +63,18 @@ pub const RtcPeer = struct {
     /// Must be called after the RtcPeer is at its final heap location
     /// (so that the `self` pointer passed to C callbacks remains valid).
     pub fn setupPeerConnection(self: *RtcPeer, config: RtcConfig) !void {
-        // Build ICE server list
-        var servers: [2][*c]const u8 = undefined;
+        // Build ICE server list: built-in STUN servers + optional TURN
+        const max_servers = stun_servers.len + 1;
+        var servers: [max_servers][*c]const u8 = undefined;
         var server_count: c_int = 0;
 
-        const stun_z = try self.allocator.dupeZ(u8, config.stun_server);
-        defer self.allocator.free(stun_z);
-        servers[@intCast(server_count)] = stun_z.ptr;
-        server_count += 1;
+        var stun_bufs: [stun_servers.len][:0]u8 = undefined;
+        for (stun_servers, 0..) |srv, idx| {
+            stun_bufs[idx] = try self.allocator.dupeZ(u8, srv);
+            servers[@intCast(server_count)] = stun_bufs[idx].ptr;
+            server_count += 1;
+        }
+        defer for (&stun_bufs) |buf| self.allocator.free(buf);
 
         var turn_z: ?[:0]u8 = null;
         defer if (turn_z) |t| self.allocator.free(t);
