@@ -30,7 +30,9 @@
   let currentTheme = $state<ThemeId>(getStoredTheme());
   let slideDirection = $state<'forward' | 'back'>('forward');
 
-  const signalUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
+  const url = URL.parse(location.href);
+  const host = url.searchParams.get('host') || location.host;
+  const signalUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${host}/ws`;
 
   let authRetried = false;
 
@@ -204,25 +206,27 @@
 </script>
 
 <main>
-  <header>
-    <h1 class="brand">Kite</h1>
-    <div class="theme-picker">
-      <button class="theme-toggle" onclick={() => themeMenuOpen = !themeMenuOpen} aria-label="Change theme">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-      </button>
-      {#if themeMenuOpen}
-        <div class="theme-menu">
-          {#each THEME_IDS as id}
-            <button
-              class="theme-item"
-              class:active={currentTheme === id}
-              onclick={() => selectTheme(id)}
-            >{THEME_LABELS[id]}</button>
-          {/each}
-        </div>
-      {/if}
-    </div>
-  </header>
+  {#if currentView !== 'detail'}
+    <header>
+      <h1 class="brand">Kite</h1>
+      <div class="theme-picker">
+        <button class="theme-toggle" onclick={() => themeMenuOpen = !themeMenuOpen} aria-label="Change theme">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
+        {#if themeMenuOpen}
+          <div class="theme-menu">
+            {#each THEME_IDS as id}
+              <button
+                class="theme-item"
+                class:active={currentTheme === id}
+                onclick={() => selectTheme(id)}
+              >{THEME_LABELS[id]}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </header>
+  {/if}
 
   {#if connecting}
     <section class="auth-card glass">

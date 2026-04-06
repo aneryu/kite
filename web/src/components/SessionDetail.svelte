@@ -34,13 +34,13 @@
 </script>
 
 <div class="detail" style:height="{viewportHeight}px">
-  <header>
+  <nav>
     <button class="back" onclick={onback} aria-label="Back">&larr;</button>
-    <h1>{session?.cwd?.split('/').pop() || `Session ${sessionId}`}</h1>
+    <span class="title">{session?.cwd?.split('/').pop() || `Session ${sessionId}`}</span>
     {#if session}
       <span class="status {session.state}">{session.state.replace('_', ' ')}</span>
     {/if}
-  </header>
+  </nav>
 
   <TerminalView {sessionId} />
 
@@ -64,15 +64,15 @@
 
 <style>
   .detail { display: flex; flex-direction: column; position: relative; overflow: hidden; }
-  header {
-    display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem;
+  nav {
+    display: flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.5rem;
     background: var(--card-bg); border-bottom: 1px solid var(--border); flex-shrink: 0;
     transition: background-color 0.2s, border-color 0.2s;
   }
-  header h1 { font-size: 1rem; color: var(--accent); flex: 1; }
+  .title { font-size: 0.85rem; color: var(--accent); flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .back {
-    background: none; border: none; color: var(--accent); font-size: 1.2rem;
-    padding: 0; min-width: 44px; min-height: 44px;
+    background: none; border: none; color: var(--accent); font-size: 1rem;
+    padding: 0; min-width: 36px; min-height: 36px;
     display: flex; align-items: center; justify-content: center;
   }
   .status { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; white-space: nowrap; }
