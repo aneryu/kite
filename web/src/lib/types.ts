@@ -39,6 +39,13 @@ export interface SessionInfo {
   last_message: string | null;
 }
 
+export interface DaemonInfo {
+  member_id: string;
+  lan_ip?: string;
+  lan_port?: number;
+  ice_servers?: string[];
+}
+
 export interface ServerMessage {
   type: string;
   session_id?: number;
@@ -61,4 +68,12 @@ export interface ServerMessage {
   success?: boolean;
   token?: string;
   last_message?: string | null;
+  member_id?: string;
+  role?: string;
+  members?: Array<{ id: string; role: string; lan_ip?: string; lan_port?: number; ice_servers?: string[] }>;
+  lan_ip?: string;
+  lan_port?: number;
+  ice_servers?: string[];
+  error?: string;
+  payload?: Record<string, unknown>;
 }
