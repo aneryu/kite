@@ -44,7 +44,7 @@
 
   <TerminalView {sessionId} />
 
-  {#if session?.state === 'waiting' || session?.state === 'asking'}
+  {#if session?.state === 'asking'}
     {@const prompt = sessionStore.prompts.get(sessionId)}
     <PromptOverlay
       options={prompt?.options ?? []}
