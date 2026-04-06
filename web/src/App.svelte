@@ -31,7 +31,7 @@
   let slideDirection = $state<'forward' | 'back'>('forward');
 
   const url = URL.parse(location.href);
-  const host = url.searchParams.get('host') || 'relay.fun.dev';
+  const host = url.searchParams.get('host') || 'kite.fun.dev/remote';
   const signalUrl = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${host}/ws`;
 
   let authRetried = false;

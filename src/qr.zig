@@ -710,7 +710,7 @@ fn getWithQuietZone(qr: QrCode, row: u32, col: u32, quiet: u32) bool {
 // ── Tests ──
 
 test "qr encode short url" {
-    const qr = try encode("https://relay.fun.dev/#/pair/abc123:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+    const qr = try encode("https://kite.fun.dev/remote/#/pair/abc123:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
     try std.testing.expect(qr.size >= 21);
     try std.testing.expect(qr.size <= 41);
 }
