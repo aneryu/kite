@@ -232,13 +232,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     const signal_host, const signal_port = parseSignalUrl(config.signal_url);
 
-    try stdout.print("\n  kite daemon started\n", .{});
-    try stdout.print("  ====================\n\n", .{});
-    try stdout.print("  Signal server: {s}\n", .{config.signal_url});
-    try stdout.print("  Pairing code:  {s}\n\n", .{pairing_code});
+    try stdout.print("\n", .{});
 
     if (config.no_auth) {
-        try stdout.print("  Auth disabled -- connect directly, no token required.\n\n", .{});
+        try stdout.print("  kite daemon started (auth disabled)\n\n", .{});
     } else {
         const http_url = if (std.mem.startsWith(u8, config.signal_url, "wss://"))
             try std.fmt.allocPrint(allocator, "https://{s}", .{config.signal_url[6..]})
@@ -248,10 +245,17 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             try allocator.dupe(u8, config.signal_url);
         defer allocator.free(http_url);
 
-        try stdout.print("  Scan QR code or open this URL on your phone:\n", .{});
-        try stdout.print("  {s}/#/pair/{s}:{s}\n\n", .{ http_url, pairing_code, setup_secret_hex });
+        const pairing_url = try std.fmt.allocPrint(allocator, "{s}/#/pair/{s}:{s}", .{ http_url, pairing_code, setup_secret_hex });
+        defer allocator.free(pairing_url);
+
+        const qr_mod = @import("qr.zig");
+        if (qr_mod.encode(pairing_url)) |qr_result| {
+            try qr_mod.renderTerminal(stdout, qr_result, "  ");
+            try stdout.print("\n", .{});
+        } else |_| {}
+
+        try stdout.print("  {s}\n\n", .{pairing_url});
     }
-    try stdout.print("  Use 'kite run' to create a session.\n\n", .{});
     try stdout.flush();
 
     // Create message queues
@@ -1442,9 +1446,6 @@ fn runStatus(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try stdout.flush();
         return;
     }
-
-    try stdout.print("  Signal server: {s}\n", .{file_config.signal_url});
-    try stdout.print("  Pairing code:  {s}\n\n", .{file_config.pairing_code});
 
     // Build pairing URL
     const http_url = if (std.mem.startsWith(u8, file_config.signal_url, "wss://"))
