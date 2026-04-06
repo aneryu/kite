@@ -19,7 +19,7 @@ const Config = struct {
     command: []const u8 = "claude",
     attach_id: ?u64 = null,
     no_auth: bool = false,
-    signal_url: []const u8 = "wss://relay.fun.dev",
+    signal_url: []const u8 = "wss://kite.fun.dev/remote",
     stun_server: []const u8 = "stun:stun.l.google.com:19302",
     turn_server: ?[]const u8 = null,
 };
@@ -79,7 +79,7 @@ fn parseCommand(arg: []const u8) ?Command {
 }
 
 const FileConfig = struct {
-    signal_url: []const u8 = "wss://relay.fun.dev",
+    signal_url: []const u8 = "wss://kite.fun.dev/remote",
     pairing_code: []const u8 = "",
     setup_secret: []const u8 = "",
 };
@@ -1314,7 +1314,7 @@ fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stdout = &stdout_writer.interface;
 
     // Parse --signal-url argument
-    var signal_url: []const u8 = "wss://relay.fun.dev";
+    var signal_url: []const u8 = "wss://kite.fun.dev/remote";
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
@@ -1428,7 +1428,7 @@ fn printUsage() void {
         \\  kite help               Show this help
         \\
         \\Options for 'setup':
-        \\  --signal-url <URL>     Signal server URL (default: wss://relay.fun.dev)
+        \\  --signal-url <URL>     Signal server URL (default: wss://kite.fun.dev/remote)
         \\
         \\Options for 'start':
         \\  --no-auth              Disable authentication (development only)
@@ -1439,4 +1439,8 @@ fn printUsage() void {
         \\  --attach <ID>     Attach to existing session instead of creating new one
         \\
     ) catch {};
+}
+
+test {
+    _ = @import("cli.zig");
 }
