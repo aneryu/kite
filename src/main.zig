@@ -21,6 +21,8 @@ const Config = struct {
     no_auth: bool = false,
     signal_url: []const u8 = "wss://kite.fun.dev/remote",
     turn_server: ?[]const u8 = null,
+    extra_ice: [8]?[]const u8 = [_]?[]const u8{null} ** 8,
+    extra_ice_count: usize = 0,
     ws_port: u16 = 7891,
 };
 
@@ -132,6 +134,7 @@ var global_peers_allocator: std.mem.Allocator = undefined;
 var global_data_queue: *MessageQueue = undefined;
 var global_state_queue: *MessageQueue = undefined;
 var global_ws_server: ?*@import("ws_server.zig").WsServer = null;
+var global_ice_servers: []const []const u8 = &rtc_mod.default_ice_servers;
 
 fn initGlobalPeers(allocator: std.mem.Allocator, data_queue: *MessageQueue, state_queue: *MessageQueue) void {
     global_peers = std.StringHashMap(*RtcPeer).init(allocator);
@@ -207,8 +210,18 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 return;
             };
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--ice-server")) {
+            if (i + 1 >= args.len) {
+                cli.printMissingOption("--ice-server <URL>", "start", "kite start --ice-server <URL>");
+                return;
+            }
+            if (config.extra_ice_count < config.extra_ice.len) {
+                config.extra_ice[config.extra_ice_count] = args[i + 1];
+                config.extra_ice_count += 1;
+            }
+            i += 1;
         } else if (std.mem.startsWith(u8, args[i], "--")) {
-            const start_opts = [_][]const u8{ "--no-auth", "--signal-url", "--ws-port" };
+            const start_opts = [_][]const u8{ "--no-auth", "--signal-url", "--ws-port", "--ice-server" };
             cli.printUnknownOption(args[i], &start_opts, "start");
             return;
         }
@@ -328,7 +341,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     defer signal_client.deinit();
     signal_client.lan_ip = lan_ip;
     signal_client.lan_port = config.ws_port;
-    const ice_json = buildIceServersJson(allocator) catch null;
+    const ice_servers = buildIceServerList(allocator, config) catch null;
+    defer if (ice_servers) |s| allocator.free(s);
+    global_ice_servers = ice_servers orelse &rtc_mod.default_ice_servers;
+    const ice_json = buildIceServersJson(allocator, global_ice_servers) catch null;
     defer if (ice_json) |j| allocator.free(j);
     signal_client.ice_servers_json = ice_json;
     signal_client.joinTopic() catch |err| {
@@ -440,12 +456,27 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     rtc_mod.cleanup();
 }
 
-fn buildIceServersJson(allocator: std.mem.Allocator) ![]const u8 {
+fn buildIceServerList(allocator: std.mem.Allocator, config: Config) ![]const []const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    for (rtc_mod.default_ice_servers) |srv| {
+        try list.append(allocator, srv);
+    }
+    if (config.turn_server) |turn| {
+        try list.append(allocator, turn);
+    }
+    for (config.extra_ice[0..config.extra_ice_count]) |maybe| {
+        if (maybe) |srv| {
+            try list.append(allocator, srv);
+        }
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+fn buildIceServersJson(allocator: std.mem.Allocator, ice_servers: []const []const u8) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "[");
 
-    const ice_servers = rtc_mod.stun_servers;
     for (ice_servers, 0..) |srv, i| {
         if (i > 0) try buf.appendSlice(allocator, ",");
         try buf.appendSlice(allocator, "\"");
@@ -554,6 +585,7 @@ fn createPeerForMember(
     state_queue: *MessageQueue,
     config: Config,
 ) void {
+    _ = config;
     // If peer already exists for this member, clean it up first
     if (global_peers.fetchRemove(member_id)) |old_entry| {
         old_entry.value.deinit();
@@ -568,7 +600,7 @@ fn createPeerForMember(
     };
     peer.* = RtcPeer.init(allocator, data_queue, state_queue, key);
     peer.setupPeerConnection(.{
-        .turn_server = config.turn_server,
+        .ice_servers = global_ice_servers,
     }) catch {
         peer.deinit();
         allocator.destroy(peer);

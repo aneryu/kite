@@ -23,7 +23,7 @@ fn checkResult(result: c_int) RtcError!void {
     };
 }
 
-pub const stun_servers = [_][]const u8{
+pub const default_ice_servers = [_][]const u8{
     "stun:stun.qq.com:3478",
     "stun:stun.miwifi.com:3478",
     "stun:stun.l.google.com:19302",
@@ -31,7 +31,7 @@ pub const stun_servers = [_][]const u8{
 };
 
 pub const RtcConfig = struct {
-    turn_server: ?[]const u8 = null,
+    ice_servers: []const []const u8 = &default_ice_servers,
 };
 
 pub const RtcPeer = struct {
@@ -63,25 +63,22 @@ pub const RtcPeer = struct {
     /// Must be called after the RtcPeer is at its final heap location
     /// (so that the `self` pointer passed to C callbacks remains valid).
     pub fn setupPeerConnection(self: *RtcPeer, config: RtcConfig) !void {
-        // Build ICE server list: built-in STUN servers + optional TURN
-        const max_servers = stun_servers.len + 1;
+        const max_servers = 16;
         var servers: [max_servers][*c]const u8 = undefined;
         var server_count: c_int = 0;
 
-        var stun_bufs: [stun_servers.len][:0]u8 = undefined;
-        for (stun_servers, 0..) |srv, idx| {
-            stun_bufs[idx] = try self.allocator.dupeZ(u8, srv);
-            servers[@intCast(server_count)] = stun_bufs[idx].ptr;
+        var bufs: [max_servers][:0]u8 = undefined;
+        for (config.ice_servers) |srv| {
+            if (server_count >= max_servers) break;
+            const idx: usize = @intCast(server_count);
+            bufs[idx] = try self.allocator.dupeZ(u8, srv);
+            servers[idx] = bufs[idx].ptr;
             server_count += 1;
         }
-        defer for (&stun_bufs) |buf| self.allocator.free(buf);
-
-        var turn_z: ?[:0]u8 = null;
-        defer if (turn_z) |t| self.allocator.free(t);
-        if (config.turn_server) |turn| {
-            turn_z = try self.allocator.dupeZ(u8, turn);
-            servers[@intCast(server_count)] = turn_z.?.ptr;
-            server_count += 1;
+        defer {
+            for (0..@intCast(server_count)) |i| {
+                self.allocator.free(bufs[i]);
+            }
         }
 
         var rtc_config: c.rtcConfiguration = std.mem.zeroes(c.rtcConfiguration);
