@@ -12,6 +12,7 @@ pub const MessageQueue = @import("message_queue.zig").MessageQueue;
 pub const SignalClient = @import("signal_client.zig").SignalClient;
 pub const rtc = @import("rtc.zig");
 pub const qr = @import("qr.zig");
+pub const WsServer = @import("ws_server.zig").WsServer;
 
 test {
     @import("std").testing.refAllDecls(@This());
