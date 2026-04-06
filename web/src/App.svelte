@@ -270,21 +270,22 @@
   main { display: flex; flex-direction: column; height: 100dvh; }
   header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0.75rem 1rem; padding-top: calc(0.75rem + env(safe-area-inset-top, 0px));
+    padding: 0.2rem 0.5rem; padding-top: calc(0.2rem + env(safe-area-inset-top, 0px));
     background: var(--card-bg); border-bottom: 1px solid var(--border); flex-shrink: 0;
     transition: background-color 0.2s, border-color 0.2s;
   }
   .brand {
-    font-family: 'Orbitron', sans-serif; font-size: 1rem; font-weight: 700;
+    font-family: 'Orbitron', sans-serif; font-size: 0.85rem; font-weight: 700;
     color: var(--accent); letter-spacing: 0.05em;
+    padding-left: 0.25rem;
   }
 
   /* Theme picker */
   .theme-picker { position: relative; }
   .theme-toggle {
     background: none; border: 1px solid var(--border); border-radius: 6px;
-    color: var(--text-secondary); padding: 0.3rem; display: flex; align-items: center;
-    min-width: 44px; min-height: 44px; justify-content: center;
+    color: var(--text-secondary); padding: 0.2rem; display: flex; align-items: center;
+    min-width: 36px; min-height: 36px; justify-content: center;
   }
   .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
   .theme-menu {
