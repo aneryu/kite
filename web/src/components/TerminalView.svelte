@@ -102,5 +102,5 @@
 <div class="terminal-container" bind:this={containerEl}></div>
 
 <style>
-  .terminal-container { flex: 1; overflow: hidden; padding-bottom: 44px; }
+  .terminal-container { flex: 1; overflow: hidden; }
 </style>

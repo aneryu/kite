@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { options = [], summary = '', onsubmit, bottomOffset = 0 }: { options?: string[]; summary?: string; onsubmit: (text: string) => void; bottomOffset?: number } = $props();
+  let { options = [], summary = '', onsubmit }: { options?: string[]; summary?: string; onsubmit: (text: string) => void } = $props();
   let inputText = $state('');
 
   function handleSubmit() {
@@ -11,35 +11,30 @@
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
   }
-
-  // Actions bar is 44px tall; overlay sits above it
-  const ACTIONS_HEIGHT = 44;
 </script>
 
-<div class="overlay" style:bottom="{bottomOffset + ACTIONS_HEIGHT}px">
-  <div class="prompt-bar glass">
-    {#if summary}
-      <div class="summary">{summary}</div>
-    {/if}
-    {#if options.length > 0}
-      <div class="options">
-        {#each options as opt}
-          <button class="opt-btn" onclick={() => handleOption(opt)}>{opt}</button>
-        {/each}
-      </div>
-    {/if}
-    {#if options.length === 0}
-      <div class="input-row">
-        <input type="text" bind:value={inputText} onkeydown={handleKeydown} placeholder="Type a response..." />
-        <button class="send-btn" onclick={handleSubmit}>Send</button>
-      </div>
-    {/if}
-  </div>
+<div class="prompt-bar glass">
+  {#if summary}
+    <div class="summary">{summary}</div>
+  {/if}
+  {#if options.length > 0}
+    <div class="options">
+      {#each options as opt}
+        <button class="opt-btn" onclick={() => handleOption(opt)}>{opt}</button>
+      {/each}
+    </div>
+  {/if}
+  {#if options.length === 0}
+    <div class="input-row">
+      <input type="text" bind:value={inputText} onkeydown={handleKeydown} placeholder="Type a response..." />
+      <button class="send-btn" onclick={handleSubmit}>Send</button>
+    </div>
+  {/if}
 </div>
 
 <style>
-  .overlay { position: fixed; left: 0; right: 0; z-index: 20; padding-bottom: env(safe-area-inset-bottom, 0); }
   .prompt-bar {
+    flex-shrink: 0;
     background: var(--card-bg-alpha); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     border-top: 2px solid var(--warn); padding: 0.75rem;
     transition: background-color 0.2s, border-color 0.2s;
