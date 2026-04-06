@@ -64,9 +64,9 @@ pub const WsServer = struct {
                 self.mutex.lock();
                 defer self.mutex.unlock();
 
-                for (self.clients, 0..) |*slot, i| {
-                    if (slot.* == null) {
-                        slot.* = WsClient{
+                for (self.clients[0..], 0..) |_, i| {
+                    if (self.clients[i] == null) {
+                        self.clients[i] = WsClient{
                             .stream = conn.stream,
                             .authenticated = false,
                             .alive = true,

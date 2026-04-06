@@ -21,6 +21,7 @@ const Config = struct {
     no_auth: bool = false,
     signal_url: []const u8 = "wss://kite.fun.dev/remote",
     turn_server: ?[]const u8 = null,
+    ws_port: u16 = 7891,
 };
 
 const Command = enum {
@@ -130,6 +131,7 @@ var global_peers: std.StringHashMap(*RtcPeer) = undefined;
 var global_peers_allocator: std.mem.Allocator = undefined;
 var global_data_queue: *MessageQueue = undefined;
 var global_state_queue: *MessageQueue = undefined;
+var global_ws_server: ?*@import("ws_server.zig").WsServer = null;
 
 fn initGlobalPeers(allocator: std.mem.Allocator, data_queue: *MessageQueue, state_queue: *MessageQueue) void {
     global_peers = std.StringHashMap(*RtcPeer).init(allocator);
@@ -143,12 +145,18 @@ fn broadcastViaRtc(data: []const u8) void {
     while (it.next()) |entry| {
         entry.value_ptr.*.send(data) catch {};
     }
+    if (global_ws_server) |ws| {
+        ws.broadcast(data);
+    }
 }
 
 fn markAllPeersAuthenticated() void {
     var it = global_peers.iterator();
     while (it.next()) |entry| {
         entry.value_ptr.*.authenticated = true;
+    }
+    if (global_ws_server) |ws| {
+        ws.markAllAuthenticated();
     }
 }
 
@@ -189,8 +197,18 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             }
             config.signal_url = args[i + 1];
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--ws-port")) {
+            if (i + 1 >= args.len) {
+                cli.printMissingOption("--ws-port <PORT>", "start", "kite start --ws-port <PORT>");
+                return;
+            }
+            config.ws_port = std.fmt.parseInt(u16, args[i + 1], 10) catch {
+                cli.printMissingOption("--ws-port <PORT>", "start", "kite start --ws-port <PORT>");
+                return;
+            };
+            i += 1;
         } else if (std.mem.startsWith(u8, args[i], "--")) {
-            const start_opts = [_][]const u8{ "--no-auth", "--signal-url" };
+            const start_opts = [_][]const u8{ "--no-auth", "--signal-url", "--ws-port" };
             cli.printUnknownOption(args[i], &start_opts, "start");
             return;
         }
@@ -274,6 +292,30 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     initGlobalPeers(allocator, &data_queue, &state_queue);
 
+    // WS server for LAN connections
+    const net_info = @import("net_info.zig");
+    const WsServer = @import("ws_server.zig").WsServer;
+    var ws_queue = MessageQueue.init(allocator);
+    defer ws_queue.deinit();
+
+    var lan_ip_buf: [16]u8 = undefined;
+    const lan_ip = net_info.getLanIp(&lan_ip_buf);
+
+    var ws_server: ?WsServer = WsServer.init(allocator, config.ws_port, &ws_queue) catch |err| blk: {
+        logStderr("[kite] WS server failed to bind port {d}: {}", .{ config.ws_port, err });
+        break :blk null;
+    };
+    defer if (ws_server) |*ws| ws.deinit();
+
+    if (ws_server != null) {
+        if (lan_ip) |ip| {
+            try stdout.print("  LAN: ws://{s}:{d}\n", .{ ip, config.ws_port });
+        } else {
+            try stdout.print("  LAN: ws://localhost:{d}\n", .{config.ws_port});
+        }
+        try stdout.flush();
+    }
+
     var session_manager = SessionManager.init(allocator, &broadcastViaRtc);
     defer session_manager.deinit();
 
@@ -299,6 +341,14 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     };
     signal_thread.detach();
+
+    // Spawn WS server thread for LAN connections
+    if (ws_server) |*ws| {
+        global_ws_server = ws;
+        _ = std.Thread.spawn(.{}, WsServer.run, .{ws}) catch |err| {
+            logStderr("[kite] Failed to spawn WS server thread: {}", .{err});
+        };
+    }
 
     // Spawn IPC listener thread (unchanged)
     const ipc_thread = try std.Thread.spawn(.{}, runIpcListener, .{ allocator, &session_manager });
@@ -356,6 +406,17 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             defer data_queue.freeBatch(data_msgs);
             for (data_msgs) |msg| {
                 logStderr("[kite-loop] data msg: {s}", .{msg[0..@min(msg.len, 200)]});
+                handleDataChannelMessage(allocator, msg, &session_manager, &auth);
+            }
+        }
+
+        // Process WS server messages from LAN clients
+        const ws_msgs = ws_queue.drain() catch break;
+        if (ws_msgs.len > 0) {
+            logStderr("[kite-loop] ws_queue: {d} messages", .{ws_msgs.len});
+            defer ws_queue.freeBatch(ws_msgs);
+            for (ws_msgs) |msg| {
+                logStderr("[kite-loop] ws msg: {s}", .{msg[0..@min(msg.len, 200)]});
                 handleDataChannelMessage(allocator, msg, &session_manager, &auth);
             }
         }

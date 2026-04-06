@@ -14,7 +14,7 @@ pub fn getLanIp(buf: *[16]u8) ?[]const u8 {
     var ifa = ifap;
     while (ifa) |a| : (ifa = a.ifa_next) {
         const sa = a.ifa_addr orelse continue;
-        if (sa.sa_family != c.AF_INET) continue;
+        if (sa.*.sa_family != c.AF_INET) continue;
         const sin: *const c.struct_sockaddr_in = @ptrCast(@alignCast(sa));
         const addr = sin.sin_addr;
         // Skip loopback (127.x.x.x)
