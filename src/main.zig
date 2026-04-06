@@ -60,7 +60,7 @@ pub fn main() !void {
         .run => try runRun(allocator, args[2..]),
         .hook => try runHook(allocator, args[2..]),
         .setup => try runSetup(allocator, args[2..]),
-        .status => try runStatus(allocator),
+        .status => try runStatus(allocator, args[2..]),
         .help => cli.printRootHelp(),
     }
 }
@@ -176,7 +176,11 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             return;
         } else if (std.mem.eql(u8, args[i], "--no-auth")) {
             config.no_auth = true;
-        } else if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
+        } else if (std.mem.eql(u8, args[i], "--signal-url")) {
+            if (i + 1 >= args.len) {
+                cli.printMissingOption("--signal-url <URL>", "start", "kite start --signal-url <URL>");
+                return;
+            }
             config.signal_url = args[i + 1];
             i += 1;
         } else if (std.mem.startsWith(u8, args[i], "--")) {
@@ -847,10 +851,18 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
         if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
             cli.printRunHelp();
             return;
-        } else if (std.mem.eql(u8, args[i], "--cmd") and i + 1 < args.len) {
+        } else if (std.mem.eql(u8, args[i], "--cmd")) {
+            if (i + 1 >= args.len) {
+                cli.printMissingOption("--cmd <CMD>", "run", "kite run --cmd <CMD>");
+                return;
+            }
             config.command = args[i + 1];
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--attach") and i + 1 < args.len) {
+        } else if (std.mem.eql(u8, args[i], "--attach")) {
+            if (i + 1 >= args.len) {
+                cli.printMissingOption("--attach <ID>", "run", "kite run --attach <ID>");
+                return;
+            }
             config.attach_id = std.fmt.parseInt(u64, args[i + 1], 10) catch null;
             i += 1;
         } else if (std.mem.startsWith(u8, args[i], "--")) {
@@ -1295,7 +1307,11 @@ fn runHook(allocator: std.mem.Allocator, args: []const []const u8) !void {
         if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
             cli.printHookHelp();
             return;
-        } else if (std.mem.eql(u8, args[i], "--event") and i + 1 < args.len) {
+        } else if (std.mem.eql(u8, args[i], "--event")) {
+            if (i + 1 >= args.len) {
+                cli.printMissingOption("--event <name>", "hook", "kite hook --event <name>");
+                return;
+            }
             event_name = args[i + 1];
             i += 1;
         } else if (std.mem.startsWith(u8, args[i], "--")) {
@@ -1342,7 +1358,11 @@ fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
         if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
             cli.printSetupHelp();
             return;
-        } else if (std.mem.eql(u8, args[i], "--signal-url") and i + 1 < args.len) {
+        } else if (std.mem.eql(u8, args[i], "--signal-url")) {
+            if (i + 1 >= args.len) {
+                cli.printMissingOption("--signal-url <URL>", "setup", "kite setup --signal-url <URL>");
+                return;
+            }
             signal_url = args[i + 1];
             i += 1;
         } else if (std.mem.startsWith(u8, args[i], "--")) {
@@ -1383,7 +1403,14 @@ fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try stdout.flush();
 }
 
-fn runStatus(allocator: std.mem.Allocator) !void {
+fn runStatus(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            cli.printStatusHelp();
+            return;
+        }
+    }
+
     const stdout_file = std.fs.File.stdout();
     var stdout_buf: [8192]u8 = undefined;
     var stdout_writer = stdout_file.writer(&stdout_buf);
