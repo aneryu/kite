@@ -26,8 +26,10 @@
 
   onMount(async () => {
     const cssTheme = readCssTheme();
+    // 12px on phones (<=480px), 14px on tablets/desktop
+    const isMobile = window.innerWidth <= 480;
     terminal = new Terminal({
-      fontSize: 14,
+      fontSize: isMobile ? 12 : 14,
       fontFamily: "'Hack Nerd Font Mono', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', monospace",
       theme: cssTheme,
       cursorBlink: true,
