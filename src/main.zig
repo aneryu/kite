@@ -326,6 +326,11 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     };
     defer signal_client.deinit();
+    signal_client.lan_ip = lan_ip;
+    signal_client.lan_port = config.ws_port;
+    const ice_json = buildIceServersJson(allocator) catch null;
+    defer if (ice_json) |j| allocator.free(j);
+    signal_client.ice_servers_json = ice_json;
     signal_client.joinTopic() catch |err| {
         logStderr("[kite] Failed to join signal topic: {}", .{err});
         printStatus("  Failed to join signal topic\n");
@@ -433,6 +438,23 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
     global_peers.deinit();
     rtc_mod.cleanup();
+}
+
+fn buildIceServersJson(allocator: std.mem.Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "[");
+
+    const ice_servers = rtc_mod.stun_servers;
+    for (ice_servers, 0..) |srv, i| {
+        if (i > 0) try buf.appendSlice(allocator, ",");
+        try buf.appendSlice(allocator, "\"");
+        try buf.appendSlice(allocator, srv);
+        try buf.appendSlice(allocator, "\"");
+    }
+
+    try buf.appendSlice(allocator, "]");
+    return try allocator.dupe(u8, buf.items);
 }
 
 /// Parse ws://host:port or wss://host:port into (host, port).

@@ -25,6 +25,11 @@ pub const SignalClient = struct {
     // Member ID assigned by the signal server on join
     member_id: ?[]const u8 = null, // owned
 
+    // LAN info and ICE servers to include in join message
+    lan_ip: ?[]const u8 = null,
+    lan_port: u16 = 0,
+    ice_servers_json: ?[]const u8 = null, // pre-formatted JSON array string
+
     // Reconnect backoff
     reconnect_delay_ms: u64 = 2000,
     max_reconnect_delay_ms: u64 = 30000,
@@ -113,13 +118,28 @@ pub const SignalClient = struct {
 
     /// Join the signal topic as a daemon (new topic-based protocol).
     pub fn joinTopic(self: *SignalClient) !void {
-        const msg = try std.fmt.allocPrint(
-            self.allocator,
-            "{{\"type\":\"join\",\"pairing_code\":\"{s}\",\"role\":\"{s}\"}}",
-            .{ self.pairing_code, self.role },
-        );
-        defer self.allocator.free(msg);
-        try self.sendText(msg);
+        var json_buf: std.ArrayList(u8) = .empty;
+        defer json_buf.deinit(self.allocator);
+
+        try json_buf.appendSlice(self.allocator, "{\"type\":\"join\",\"pairing_code\":\"");
+        try json_buf.appendSlice(self.allocator, self.pairing_code);
+        try json_buf.appendSlice(self.allocator, "\",\"role\":\"");
+        try json_buf.appendSlice(self.allocator, self.role);
+        try json_buf.appendSlice(self.allocator, "\"");
+
+        if (self.lan_ip) |ip| {
+            try json_buf.appendSlice(self.allocator, ",\"lan_ip\":\"");
+            try json_buf.appendSlice(self.allocator, ip);
+            try json_buf.writer(self.allocator).print("\",\"lan_port\":{d}", .{self.lan_port});
+        }
+
+        if (self.ice_servers_json) |ice| {
+            try json_buf.appendSlice(self.allocator, ",\"ice_servers\":");
+            try json_buf.appendSlice(self.allocator, ice);
+        }
+
+        try json_buf.appendSlice(self.allocator, "}");
+        try self.sendText(json_buf.items);
     }
 
     /// Reconnect to the signal server by creating a new TCP connection
