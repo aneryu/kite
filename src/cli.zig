@@ -43,7 +43,7 @@ pub fn code(color: Color) []const u8 {
 /// single edit, which gives more intuitive results for real-world typos such
 /// as "statr" → "start" (cost 1).
 ///
-/// Uses a stack-allocated 256×256 matrix (64 KB). Inputs longer than 255
+/// Uses a 3×256 rolling buffer (~6 KB on stack). Inputs longer than 255
 /// characters are truncated for the comparison.
 pub fn levenshteinDistance(a: []const u8, b: []const u8) usize {
     const max_len = 255;
@@ -271,12 +271,11 @@ pub fn printUnknownOption(option: []const u8, known_options: []const []const u8,
     var w = f.writer(&buf);
     const out = &w.interface;
 
-    out.print("Unknown option: '--{s}'.", .{option}) catch {};
+    out.print("Unknown option: '{s}'.", .{option}) catch {};
 
-    // Strip leading "--" from input before fuzzy matching against bare names
     const suggestion = findClosest(option, known_options, 2);
     if (suggestion) |s| {
-        out.print(" Did you mean '--{s}'?", .{s}) catch {};
+        out.print(" Did you mean '{s}'?", .{s}) catch {};
     }
 
     out.print("\nRun 'kite {s} --help' for available options.\n", .{command}) catch {};
@@ -290,9 +289,9 @@ pub fn printMissingOption(option: []const u8, command: []const u8, usage: []cons
     var w = f.writer(&buf);
     const out = &w.interface;
 
-    out.print("Missing required option: --{s}\n", .{option}) catch {};
-    out.print("Usage: {s}\n", .{usage}) catch {};
-    out.print("Run 'kite {s} --help' for more information.\n", .{command}) catch {};
+    out.print("Missing required option: {s}\n\n", .{option}) catch {};
+    out.print("Usage:\n  {s}\n", .{usage}) catch {};
+    _ = command;
     out.flush() catch {};
 }
 
@@ -327,4 +326,18 @@ test "findClosest match" {
     try std.testing.expectEqualStrings("start", findClosest("strat", &cmds, 2).?);
     try std.testing.expectEqualStrings("status", findClosest("statu", &cmds, 2).?);
     try std.testing.expect(findClosest("xyzzy", &cmds, 2) == null);
+}
+
+test "printUnknownCommand does not crash" {
+    printUnknownCommand("star");
+    printUnknownCommand("xyzzy");
+}
+
+test "printUnknownOption does not crash" {
+    const opts = [_][]const u8{ "--no-auth", "--signal-url" };
+    printUnknownOption("--no-auht", &opts, "start");
+}
+
+test "printMissingOption does not crash" {
+    printMissingOption("--event <name>", "hook", "kite hook --event <name>");
 }
