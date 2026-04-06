@@ -22,7 +22,7 @@
 
 <div class="detail">
   <header>
-    <button class="back" onclick={onback}>&larr;</button>
+    <button class="back" onclick={onback} aria-label="Back">&larr;</button>
     <h1>{session?.cwd?.split('/').pop() || `Session ${sessionId}`}</h1>
     {#if session}
       <span class="status {session.state}">{session.state.replace('_', ' ')}</span>
@@ -51,17 +51,37 @@
 
 <style>
   .detail { display: flex; flex-direction: column; height: 100dvh; position: relative; }
-  header { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; background: var(--card-bg); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  header {
+    display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem;
+    background: var(--card-bg); border-bottom: 1px solid var(--border); flex-shrink: 0;
+    transition: background-color 0.2s, border-color 0.2s;
+  }
   header h1 { font-size: 1rem; color: var(--accent); flex: 1; }
-  .back { background: none; border: none; color: var(--accent); font-size: 1.2rem; cursor: pointer; padding: 0 0.5rem; }
-  .status { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; }
-  .status.running { background: var(--success); color: #000; }
+  .back {
+    background: none; border: none; color: var(--accent); font-size: 1.2rem;
+    padding: 0; min-width: 44px; min-height: 44px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .status { font-size: 0.7rem; padding: 0.15rem 0.5rem; border-radius: 4px; white-space: nowrap; }
+  .status.running { background: var(--success); color: #000; box-shadow: 0 0 8px rgba(102, 187, 106, 0.3); }
   .status.waiting { background: var(--warn); color: #000; }
-  .status.stopped { background: var(--danger); color: #fff; }
-  .status.waiting_permission { background: var(--warning, #f59e0b); color: #000; }
+  .status.stopped { background: var(--text-muted); color: #fff; }
+  .status.waiting_permission { background: var(--warn); color: #000; }
   .status.asking { background: var(--warn); color: #000; }
-  .actions { display: flex; gap: 0; flex-shrink: 0; border-top: 1px solid var(--border); background: var(--card-bg); }
-  .actions button { flex: 1; padding: 0.6rem; border: none; border-right: 1px solid var(--border); background: transparent; color: var(--fg); font-size: 0.8rem; cursor: pointer; font-family: monospace; }
+  .actions {
+    display: flex; flex-shrink: 0;
+    border-top: 1px solid var(--border); background: var(--card-bg);
+    transition: background-color 0.2s, border-color 0.2s;
+  }
+  .actions button {
+    flex: 1; padding: 0.6rem; border: none; border-right: 1px solid var(--border);
+    background: transparent; color: var(--fg); font-size: 0.8rem;
+    font-family: monospace; min-height: 44px;
+  }
   .actions button:last-child { border-right: none; }
   .actions button:active { background: var(--border); }
+
+  @media (min-width: 640px) {
+    .detail { max-width: 960px; margin: 0 auto; width: 100%; }
+  }
 </style>

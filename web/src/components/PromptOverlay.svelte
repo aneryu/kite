@@ -14,7 +14,7 @@
 </script>
 
 <div class="overlay">
-  <div class="prompt-bar">
+  <div class="prompt-bar glass">
     {#if summary}
       <div class="summary">{summary}</div>
     {/if}
@@ -34,13 +34,28 @@
 
 <style>
   .overlay { position: absolute; bottom: 0; left: 0; right: 0; z-index: 20; padding-bottom: env(safe-area-inset-bottom, 0); }
-  .prompt-bar { background: var(--card-bg); border-top: 2px solid var(--warn); padding: 0.75rem; }
-  .summary { font-size: 0.85rem; color: #ccc; margin-bottom: 0.5rem; max-height: 3rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .prompt-bar {
+    background: var(--card-bg-alpha); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-top: 2px solid var(--warn); padding: 0.75rem;
+    transition: background-color 0.2s, border-color 0.2s;
+  }
+  .summary { font-size: 0.85rem; color: var(--fg); margin-bottom: 0.5rem; max-height: 3rem; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
   .options { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
-  .opt-btn { padding: 0.4rem 1rem; border: 1px solid var(--accent); border-radius: 20px; background: transparent; color: var(--accent); font-size: 0.85rem; cursor: pointer; }
+  .opt-btn {
+    padding: 0.4rem 1rem; border: 1px solid var(--accent); border-radius: 20px;
+    background: transparent; color: var(--accent); font-size: 0.85rem;
+    transition: background 0.1s, color 0.1s; min-height: 36px;
+  }
   .opt-btn:active { background: var(--accent); color: #000; }
   .input-row { display: flex; gap: 0.5rem; }
-  input { flex: 1; padding: 0.6rem 0.8rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); font-size: 0.9rem; }
-  input:focus { outline: none; border-color: var(--accent); }
-  .send-btn { padding: 0.6rem 1rem; border: none; border-radius: 8px; background: var(--accent); color: #000; font-weight: 600; cursor: pointer; }
+  input {
+    flex: 1; padding: 0.6rem 0.8rem; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--fg); font-size: 0.9rem; min-height: 44px;
+  }
+  input:focus { border-color: var(--accent); }
+  .send-btn {
+    padding: 0.6rem 1rem; border: none; border-radius: 8px;
+    background: var(--accent); color: #000; font-weight: 600;
+    box-shadow: 0 0 8px var(--glow-color); min-height: 44px;
+  }
 </style>
