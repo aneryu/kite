@@ -121,6 +121,14 @@ button:active {
   }
 }
 
+/* === Background noise texture === */
+#noise-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  pointer-events: none;
+  opacity: 0.06;
+  mix-blend-mode: overlay;
+}
+
 /* === Glassmorphism Fallback === */
 
 @supports not (backdrop-filter: blur(1px)) {
