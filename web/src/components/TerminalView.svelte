@@ -7,7 +7,7 @@
   import { transport } from '../lib/connection';
   import type { ServerMessage } from '../lib/types';
 
-  let { sessionId }: { sessionId: number } = $props();
+  let { sessionId, fontSize = 11 }: { sessionId: number; fontSize?: number } = $props();
   let containerEl: HTMLDivElement;
   let terminal: Terminal;
   let fitAddon: FitAddon;
@@ -26,11 +26,9 @@
 
   onMount(async () => {
     const cssTheme = readCssTheme();
-    // 12px on phones (<=480px), 14px on tablets/desktop
-    const isMobile = window.innerWidth <= 480;
     terminal = new Terminal({
-      fontSize: isMobile ? 12 : 14,
-      fontFamily: "'Hack Nerd Font Mono', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', monospace",
+      fontSize,
+      fontFamily: "'Hack Nerd Font', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', monospace",
       theme: cssTheme,
       cursorBlink: true,
       scrollback: 5000,
@@ -91,6 +89,13 @@
       terminal.options.theme = readCssTheme();
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  });
+
+  $effect(() => {
+    if (terminal) {
+      terminal.options.fontSize = fontSize;
+      fitAddon?.fit();
+    }
   });
 
   onDestroy(() => {
