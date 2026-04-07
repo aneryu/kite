@@ -35,18 +35,20 @@
 <button class="fab" onclick={handleCreate} aria-label="Create session">+</button>
 
 <style>
-  .list { flex: 1; overflow-y: auto; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; -webkit-overflow-scrolling: touch; }
+  .list { flex: 1; overflow-y: auto; padding: 0.75rem; padding-bottom: 4.5rem; display: flex; flex-direction: column; gap: 0.5rem; -webkit-overflow-scrolling: touch; }
   .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem 1rem; gap: 0.5rem; }
   .empty-icon { color: var(--text-muted); }
   .empty-title { color: var(--text-secondary); font-size: 1rem; font-weight: 600; }
   .empty-sub { color: var(--text-muted); font-size: 0.85rem; text-align: center; }
   .empty-sub code { color: var(--accent); }
   .fab {
-    position: fixed; bottom: 1.5rem; right: 1.5rem; width: 48px; height: 48px;
+    position: fixed; bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px)); right: 1.5rem;
+    width: 48px; height: 48px;
     border-radius: 50%; border: none; color: #000;
     font-size: 1.4rem; font-weight: 700; z-index: 10;
     background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #000));
     box-shadow: 0 2px 4px rgba(0,0,0,0.3), 0 4px 16px var(--glow-color);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
   }
 
   @media (min-width: 640px) {

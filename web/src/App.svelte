@@ -278,7 +278,7 @@
   main { display: flex; flex-direction: column; height: 100dvh; }
   header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0.2rem 0.5rem; padding-top: calc(0.2rem + env(safe-area-inset-top, 0px));
+    padding: 0.35rem 0.6rem; padding-top: calc(0.35rem + env(safe-area-inset-top, 0px));
     background: var(--card-bg); flex-shrink: 0;
     border-bottom: none; position: relative;
     transition: background-color 0.2s;
