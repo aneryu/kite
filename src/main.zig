@@ -450,16 +450,18 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
 fn buildIceServerList(allocator: std.mem.Allocator, config: Config) ![]const []const u8 {
     var list: std.ArrayList([]const u8) = .empty;
-    for (rtc_mod.default_ice_servers) |srv| {
-        try list.append(allocator, srv);
-    }
-    if (config.turn_server) |turn| {
-        try list.append(allocator, turn);
-    }
+    // User-defined servers first (TURN, custom STUN) — tried before defaults
     for (config.extra_ice[0..config.extra_ice_count]) |maybe| {
         if (maybe) |srv| {
             try list.append(allocator, srv);
         }
+    }
+    if (config.turn_server) |turn| {
+        try list.append(allocator, turn);
+    }
+    // Built-in STUN servers as fallback
+    for (rtc_mod.default_ice_servers) |srv| {
+        try list.append(allocator, srv);
     }
     return list.toOwnedSlice(allocator);
 }
