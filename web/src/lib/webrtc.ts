@@ -254,7 +254,7 @@ export class WebRtcTransport implements Transport {
         this.cancelRecovery();
         this.fullRebuild();
       }
-    }, 15_000);
+    }, 5_000);
   }
 
   private cancelRecovery(): void {
@@ -375,7 +375,7 @@ export class WebRtcTransport implements Transport {
     this.stopPing();
     this.pingInterval = window.setInterval(() => {
       this.sendRaw({ type: 'ping' });
-    }, 10_000);
+    }, 5_000);
   }
 
   private stopPing(): void {

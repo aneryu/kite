@@ -20,8 +20,8 @@ export class SignalClient {
   private handlers: SignalMessageHandler[] = [];
   private stateHandlers: SignalStateHandler[] = [];
   private reconnectTimer: number | null = null;
-  private reconnectDelay = 2000;
-  private maxReconnectDelay = 30000;
+  private reconnectDelay = 500;
+  private maxReconnectDelay = 5000;
   private url: string;
   private pairingCode: string;
   private role: string;
@@ -30,8 +30,8 @@ export class SignalClient {
   // Heartbeat state
   private pingInterval: number | null = null;
   private pongTimeout: number | null = null;
-  private readonly PING_INTERVAL = 15_000;
-  private readonly PONG_TIMEOUT = 30_000;
+  private readonly PING_INTERVAL = 8_000;
+  private readonly PONG_TIMEOUT = 10_000;
 
   // Buffered messages to send after reconnect
   private pendingSends: string[] = [];
@@ -58,7 +58,7 @@ export class SignalClient {
       this.ws = new WebSocket(this.url);
       this.ws.onopen = () => {
         this.send({ type: 'join', pairing_code: this.pairingCode, role: this.role });
-        this.reconnectDelay = 2000;
+        this.reconnectDelay = 500;
         this.startHeartbeat();
         this.flushPending();
         this.notifyState('open');
