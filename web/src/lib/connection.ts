@@ -124,6 +124,7 @@ export async function connect(signalUrl: string, pairingCode: string): Promise<v
   currentInfo.signal = 'connecting';
   notifyConnInfo();
   await signalClient.connect();
+  webrtcTransport.warmup();
   webrtcTransport.installVisibilityHandler();
 }
 
