@@ -31,6 +31,27 @@ export class WebRtcTransport implements Transport {
   private recoveryTimeout: number | null = null;
   private visibilityHandler: (() => void) | null = null;
 
+  private buildPcConfig(servers?: string[]): RTCConfiguration {
+    const iceServers: RTCIceServer[] = (servers && servers.length > 0
+      ? servers
+      : ['stun:relay.fun.dev:3478']
+    ).map((s) => {
+      if (s.startsWith('turn:')) {
+        const match = s.match(/^turn:([^:]+):([^@]+)@(.+)$/);
+        if (match) {
+          return { urls: `turn:${match[3]}`, username: match[1], credential: match[2] };
+        }
+      }
+      return { urls: s };
+    });
+    return {
+      iceServers,
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require',
+      iceCandidatePoolSize: 4,
+    };
+  }
+
   // --- Transport interface methods ---
 
   async connect(): Promise<void> {
@@ -142,19 +163,7 @@ export class WebRtcTransport implements Transport {
     this.remoteDescriptionSet = false;
     this.pendingCandidates = [];
 
-    const servers = this.iceServers.length > 0
-      ? this.iceServers
-      : ['stun:relay.fun.dev:3478'];
-    const rtcIceServers: RTCIceServer[] = servers.map((s) => {
-      if (s.startsWith('turn:')) {
-        const match = s.match(/^turn:([^:]+):([^@]+)@(.+)$/);
-        if (match) {
-          return { urls: `turn:${match[3]}`, username: match[1], credential: match[2] };
-        }
-      }
-      return { urls: s };
-    });
-    this.pc = new RTCPeerConnection({ iceServers: rtcIceServers });
+    this.pc = new RTCPeerConnection(this.buildPcConfig(this.iceServers));
     this.dc = this.pc.createDataChannel('kite', { ordered: true });
 
     this.dc.onopen = () => {
