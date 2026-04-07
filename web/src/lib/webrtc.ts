@@ -156,15 +156,42 @@ export class WebRtcTransport implements Transport {
     }
   }
 
+  warmup(): void {
+    if (this.pc) return;
+    console.log('[RTC] Warming up PeerConnection');
+    this.pc = new RTCPeerConnection(this.buildPcConfig());
+    this.gatheredTypes.clear();
+    this.gatheringDone = false;
+    this.pc.onicecandidate = (ev) => {
+      if (ev.candidate) {
+        const ct = ev.candidate.type;
+        if (ct) this.gatheredTypes.add(ct);
+      } else {
+        this.gatheringDone = true;
+      }
+    };
+  }
+
   startWebRTC(): void {
     this.stopPing();
-    this.dc?.close();
-    this.pc?.close();
     this.remoteDescriptionSet = false;
     this.pendingCandidates = [];
 
-    this.pc = new RTCPeerConnection(this.buildPcConfig(this.iceServers));
-    this.dc = this.pc.createDataChannel('kite', { ordered: true });
+    const reuseWarmed = this.pc
+      && this.pc.connectionState === 'new'
+      && (this.iceServers.length === 0);
+
+    if (!reuseWarmed) {
+      this.dc?.close();
+      this.pc?.close();
+      this.pc = new RTCPeerConnection(this.buildPcConfig(this.iceServers));
+      this.gatheredTypes.clear();
+      this.gatheringDone = false;
+    } else {
+      console.log('[RTC] Reusing warmed PeerConnection');
+    }
+
+    this.dc = this.pc!.createDataChannel('kite', { ordered: true });
 
     this.dc.onopen = () => {
       console.log('[RTC] DataChannel open');
@@ -197,10 +224,7 @@ export class WebRtcTransport implements Transport {
       this.notifyState('closed');
     };
 
-    this.gatheredTypes.clear();
-    this.gatheringDone = false;
-
-    this.pc.onicecandidate = (ev) => {
+    this.pc!.onicecandidate = (ev) => {
       if (ev.candidate) {
         // Track candidate type for UI display
         const ct = ev.candidate.type;
