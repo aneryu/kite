@@ -122,6 +122,19 @@ export class WebRtcTransport implements Transport {
     }
   }
 
+  hasActivePeer(): boolean {
+    return this.pc !== null && this.pc.connectionState !== 'closed';
+  }
+
+  restartOrRebuild(): void {
+    if (this.hasActivePeer()) {
+      console.log('[RTC] Active peer exists, attempting ICE restart instead of full rebuild');
+      this.attemptIceRestart();
+    } else {
+      this.startWebRTC();
+    }
+  }
+
   startWebRTC(): void {
     this.stopPing();
     this.dc?.close();

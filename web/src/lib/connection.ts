@@ -148,7 +148,7 @@ function setupTransports(daemon: DaemonInfo): void {
 
   currentInfo.webrtc = 'connecting';
   notifyConnInfo();
-  webrtcTransport.startWebRTC();
+  webrtcTransport.restartOrRebuild();
 
   // Setup LAN WebSocket (if info available and not already created)
   if (daemon.lan_ip && daemon.lan_port && !lanWs) {
