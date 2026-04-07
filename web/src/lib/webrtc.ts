@@ -46,8 +46,6 @@ export class WebRtcTransport implements Transport {
     });
     return {
       iceServers,
-      bundlePolicy: 'max-bundle',
-      rtcpMuxPolicy: 'require',
       iceCandidatePoolSize: 4,
     };
   }

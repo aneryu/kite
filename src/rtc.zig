@@ -89,7 +89,6 @@ pub const RtcPeer = struct {
         var rtc_config: c.rtcConfiguration = std.mem.zeroes(c.rtcConfiguration);
         rtc_config.iceServers = &servers;
         rtc_config.iceServersCount = server_count;
-        rtc_config.forceMediaTransport = true;
 
         const pc = c.rtcCreatePeerConnection(&rtc_config);
         if (pc < 0) return RtcError.RuntimeFailure;
