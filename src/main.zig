@@ -19,7 +19,7 @@ const Config = struct {
     command: []const u8 = "claude",
     attach_id: ?u64 = null,
     no_auth: bool = false,
-    signal_url: []const u8 = "wss://kite.fun.dev/remote",
+    signal_url: []const u8 = "wss://relay.fun.dev/ws",
     turn_server: ?[]const u8 = null,
     extra_ice: [8]?[]const u8 = [_]?[]const u8{null} ** 8,
     extra_ice_count: usize = 0,
@@ -82,7 +82,7 @@ fn parseCommand(arg: []const u8) ?Command {
 }
 
 const FileConfig = struct {
-    signal_url: []const u8 = "wss://kite.fun.dev/remote",
+    signal_url: []const u8 = "wss://relay.fun.dev/ws",
     pairing_code: []const u8 = "",
     setup_secret: []const u8 = "",
 };
@@ -274,15 +274,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (config.no_auth) {
         try stdout.print("  kite daemon started (auth disabled)\n\n", .{});
     } else {
-        const http_url = if (std.mem.startsWith(u8, config.signal_url, "wss://"))
-            try std.fmt.allocPrint(allocator, "https://{s}", .{config.signal_url[6..]})
-        else if (std.mem.startsWith(u8, config.signal_url, "ws://"))
-            try std.fmt.allocPrint(allocator, "http://{s}", .{config.signal_url[5..]})
-        else
-            try allocator.dupe(u8, config.signal_url);
-        defer allocator.free(http_url);
-
-        const pairing_url = try std.fmt.allocPrint(allocator, "{s}/#/pair/{s}:{s}", .{ http_url, pairing_code, setup_secret_hex });
+        const pairing_url = try std.fmt.allocPrint(allocator, "https://kite.fun.dev/remote/#/pair/{s}:{s}", .{ pairing_code, setup_secret_hex });
         defer allocator.free(pairing_url);
 
         const qr_mod = @import("qr.zig");
@@ -520,7 +512,7 @@ fn handleSignalMessage(
 ) void {
     _ = auth;
     const parsed = std.json.parseFromSlice(struct {
-        @"type": []const u8,
+        type: []const u8,
         member_id: ?[]const u8 = null,
         role: ?[]const u8 = null,
         from: ?[]const u8 = null,
@@ -531,22 +523,22 @@ fn handleSignalMessage(
     defer parsed.deinit();
     const msg = parsed.value;
 
-    if (std.mem.eql(u8, msg.@"type", "joined")) {
+    if (std.mem.eql(u8, msg.type, "joined")) {
         logStderr("[kite-signal] Joined topic, creating peers for existing browsers", .{});
         createPeersForExistingMembers(allocator, raw, data_queue, state_queue, config);
         _ = session_manager;
-    } else if (std.mem.eql(u8, msg.@"type", "member_joined")) {
+    } else if (std.mem.eql(u8, msg.type, "member_joined")) {
         const role = msg.role orelse "";
         const member_id = msg.member_id orelse return;
         if (std.mem.eql(u8, role, "browser")) {
             logStderr("[kite-signal] Browser joined: {s}", .{member_id});
             createPeerForMember(allocator, member_id, data_queue, state_queue, config);
         }
-    } else if (std.mem.eql(u8, msg.@"type", "member_left")) {
+    } else if (std.mem.eql(u8, msg.type, "member_left")) {
         const member_id = msg.member_id orelse return;
         logStderr("[kite-signal] Member left: {s}", .{member_id});
         destroyPeer(allocator, member_id);
-    } else if (std.mem.eql(u8, msg.@"type", "relay")) {
+    } else if (std.mem.eql(u8, msg.type, "relay")) {
         const from = msg.from orelse return;
         handleRelayPayload(allocator, from, raw);
     }
@@ -626,7 +618,7 @@ fn handleRelayPayload(allocator: std.mem.Allocator, from: []const u8, raw: []con
     // Parse the payload object from the relay message
     const RelayMsg = struct {
         payload: struct {
-            @"type": []const u8 = "",
+            type: []const u8 = "",
             sdp: ?[]const u8 = null,
             sdp_type: ?[]const u8 = null,
             candidate: ?[]const u8 = null,
@@ -645,12 +637,12 @@ fn handleRelayPayload(allocator: std.mem.Allocator, from: []const u8, raw: []con
         return;
     };
 
-    if (std.mem.eql(u8, payload.@"type", "sdp_offer")) {
+    if (std.mem.eql(u8, payload.type, "sdp_offer")) {
         logStderr("[kite-signal] Received SDP offer from {s} (len={d})", .{ from, (payload.sdp orelse "").len });
         peer.setRemoteDescription(payload.sdp orelse return, payload.sdp_type orelse "offer") catch |err| {
             logStderr("[kite-signal] Failed to set remote description: {}", .{err});
         };
-    } else if (std.mem.eql(u8, payload.@"type", "ice_candidate")) {
+    } else if (std.mem.eql(u8, payload.type, "ice_candidate")) {
         logStderr("[kite-signal] Received ICE candidate from {s}", .{from});
         peer.addRemoteCandidate(payload.candidate orelse return, payload.mid orelse "") catch |err| {
             logStderr("[kite-signal] Failed to add remote candidate: {}", .{err});
@@ -666,7 +658,7 @@ fn handleRtcStateMessage(
     auth: *Auth,
 ) void {
     const parsed = std.json.parseFromSlice(struct {
-        @"type": []const u8,
+        type: []const u8,
         member_id: ?[]const u8 = null,
         sdp: ?[]const u8 = null,
         sdp_type: ?[]const u8 = null,
@@ -677,7 +669,7 @@ fn handleRtcStateMessage(
     defer parsed.deinit();
     const msg = parsed.value;
 
-    if (std.mem.eql(u8, msg.@"type", "local_description")) {
+    if (std.mem.eql(u8, msg.type, "local_description")) {
         const member_id = msg.member_id orelse return;
         logStderr("[kite-rtc] Got local_description for {s}, forwarding as sdp_answer (sdp len={d}, type={s})", .{ member_id, (msg.sdp orelse "").len, msg.sdp_type orelse "answer" });
         const escaped_sdp = protocol.jsonEscapeAllocPublic(allocator, msg.sdp orelse return) catch return;
@@ -696,7 +688,7 @@ fn handleRtcStateMessage(
             logStderr("[kite-rtc] Failed to send sdp_answer relay: {}", .{err});
         };
         logStderr("[kite-rtc] sdp_answer relayed to {s}", .{member_id});
-    } else if (std.mem.eql(u8, msg.@"type", "local_candidate")) {
+    } else if (std.mem.eql(u8, msg.type, "local_candidate")) {
         const member_id = msg.member_id orelse return;
         logStderr("[kite-rtc] Got local_candidate for {s}, forwarding via signal", .{member_id});
         const escaped_cand = protocol.jsonEscapeAllocPublic(allocator, msg.candidate orelse return) catch return;
@@ -714,7 +706,7 @@ fn handleRtcStateMessage(
         signal_client.sendJson(json) catch |err| {
             logStderr("[kite-rtc] Failed to send ice_candidate relay: {}", .{err});
         };
-    } else if (std.mem.eql(u8, msg.@"type", "state_change")) {
+    } else if (std.mem.eql(u8, msg.type, "state_change")) {
         const state = msg.state orelse "unknown";
         logStderr("[kite-rtc] State change ({s}): {s}", .{ msg.member_id orelse "unknown", state });
         // Print user-visible connection status
@@ -725,7 +717,7 @@ fn handleRtcStateMessage(
         } else if (std.mem.eql(u8, state, "disconnected")) {
             printStatus("  WebRTC disconnected\n");
         }
-    } else if (std.mem.eql(u8, msg.@"type", "dc_open")) {
+    } else if (std.mem.eql(u8, msg.type, "dc_open")) {
         logStderr("[kite-rtc] DataChannel opened for {s}!", .{msg.member_id orelse "unknown"});
         printStatus("  Browser connected\n");
         // If peer was previously authenticated (ICE restart), auto-sync
@@ -879,20 +871,20 @@ fn handleDataChannelMessage(
     defer parsed_msg.deinit();
     const msg = parsed_msg.value();
 
-    if (std.mem.eql(u8, msg.@"type", "auth")) {
+    if (std.mem.eql(u8, msg.type, "auth")) {
         logStderr("[kite-dc] Handling auth message (has token={})", .{msg.token != null});
         handleAuthMessage(allocator, msg, auth, session_manager);
-    } else if (std.mem.eql(u8, msg.@"type", "terminal_input")) {
+    } else if (std.mem.eql(u8, msg.type, "terminal_input")) {
         const session_id = msg.session_id orelse 1;
         if (msg.data) |data| {
             session_manager.writeToSession(session_id, data) catch {};
         }
-    } else if (std.mem.eql(u8, msg.@"type", "resize")) {
+    } else if (std.mem.eql(u8, msg.type, "resize")) {
         const session_id = msg.session_id orelse 1;
         const rows = msg.rows orelse return;
         const cols = msg.cols orelse return;
         _ = session_manager.resizeSession(session_id, rows, cols);
-    } else if (std.mem.eql(u8, msg.@"type", "request_snapshot")) {
+    } else if (std.mem.eql(u8, msg.type, "request_snapshot")) {
         const session_id = msg.session_id orelse return;
         logStderr("[kite-dc] request_snapshot for session {d}", .{session_id});
         if (session_manager.getTerminalSnapshot(allocator, session_id)) |history| {
@@ -902,21 +894,21 @@ fn handleDataChannelMessage(
                 broadcastTerminalSnapshot(allocator, history, session_id);
             }
         }
-    } else if (std.mem.eql(u8, msg.@"type", "prompt_response")) {
+    } else if (std.mem.eql(u8, msg.type, "prompt_response")) {
         const session_id = msg.session_id orelse 1;
         const text = msg.text orelse msg.data orelse "";
         session_manager.resolvePromptResponse(session_id, text);
-    } else if (std.mem.eql(u8, msg.@"type", "create_session")) {
+    } else if (std.mem.eql(u8, msg.type, "create_session")) {
         handleCreateSession(allocator, raw, session_manager);
-    } else if (std.mem.eql(u8, msg.@"type", "delete_session")) {
+    } else if (std.mem.eql(u8, msg.type, "delete_session")) {
         const session_id = msg.session_id orelse return;
         session_manager.destroySession(session_id);
         const result = protocol.encodeDeleteSessionResult(allocator, session_id, true) catch return;
         defer allocator.free(result);
         broadcastViaRtc(result);
-    } else if (std.mem.eql(u8, msg.@"type", "ping")) {
+    } else if (std.mem.eql(u8, msg.type, "ping")) {
         broadcastViaRtc(protocol.encodePong());
-    } else if (std.mem.eql(u8, msg.@"type", "request_sync")) {
+    } else if (std.mem.eql(u8, msg.type, "request_sync")) {
         logStderr("[kite-dc] request_sync received", .{});
         sendSessionsSync(allocator, session_manager, auth);
         sendTerminalSnapshots(allocator, session_manager);
@@ -1196,12 +1188,11 @@ fn runRun(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     // Disable mouse tracking modes that the child process may have enabled.
     // Without this, the terminal keeps reporting mouse events as garbled text.
-    _ = posix.write(stdout_fd,
-        "\x1b[?1000l" // disable normal mouse tracking
+    _ = posix.write(stdout_fd, "\x1b[?1000l" // disable normal mouse tracking
         ++ "\x1b[?1002l" // disable button-event tracking
         ++ "\x1b[?1003l" // disable all-motion tracking
         ++ "\x1b[?1006l" // disable SGR extended mouse mode
-        ++ "\x1b[?25h"   // ensure cursor is visible
+        ++ "\x1b[?25h" // ensure cursor is visible
     ) catch {};
 
     try stdout.print("\n  Session ended.\n", .{});
@@ -1525,7 +1516,7 @@ fn runSetup(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const stdout = &stdout_writer.interface;
 
     // Parse --signal-url argument
-    var signal_url: []const u8 = "wss://kite.fun.dev/remote";
+    var signal_url: []const u8 = "wss://relay.fun.dev/ws";
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--help") or std.mem.eql(u8, args[i], "-h")) {
@@ -1617,15 +1608,7 @@ fn runStatus(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     // Build pairing URL
-    const http_url = if (std.mem.startsWith(u8, file_config.signal_url, "wss://"))
-        try std.fmt.allocPrint(allocator, "https://{s}", .{file_config.signal_url[6..]})
-    else if (std.mem.startsWith(u8, file_config.signal_url, "ws://"))
-        try std.fmt.allocPrint(allocator, "http://{s}", .{file_config.signal_url[5..]})
-    else
-        try allocator.dupe(u8, file_config.signal_url);
-    defer allocator.free(http_url);
-
-    const pairing_url = try std.fmt.allocPrint(allocator, "{s}/#/pair/{s}:{s}", .{ http_url, file_config.pairing_code, file_config.setup_secret });
+    const pairing_url = try std.fmt.allocPrint(allocator, "https://kite.fun.dev/remote/#/pair/{s}:{s}", .{ file_config.pairing_code, file_config.setup_secret });
     defer allocator.free(pairing_url);
 
     // Render QR code

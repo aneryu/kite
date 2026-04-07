@@ -197,7 +197,7 @@ pub fn printSetupHelp() void {
     out.print("  {s}kite setup{s} [options]\n\n", .{ code(.green), code(.reset) }) catch {};
     out.print("{s}Options:{s}\n", .{ code(.bold), code(.reset) }) catch {};
     out.print("  {s}--signal-url{s} <URL>  Signal server URL\n", .{ code(.yellow), code(.reset) }) catch {};
-    out.print("                       (default: wss://kite.fun.dev/remote)\n", .{}) catch {};
+    out.print("                       (default: wss://relay.fun.dev/ws)\n", .{}) catch {};
     out.print("\n{s}Examples:{s}\n", .{ code(.bold), code(.reset) }) catch {};
     out.print("  {s}kite setup{s}\n", .{ code(.green), code(.reset) }) catch {};
     out.print("  {s}kite setup{s} --signal-url wss://my-relay.example.com/remote\n\n", .{ code(.green), code(.reset) }) catch {};

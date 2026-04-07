@@ -96,7 +96,7 @@ kite start [options]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--cmd` | `claude` | Command to run in the PTY |
-| `--signal-url` | `wss://kite.fun.dev/remote` | Signal server WebSocket URL |
+| `--signal-url` | `wss://relay.fun.dev/ws` | Signal server WebSocket URL |
 | `--stun-server` | `stun:stun.l.google.com:19302` | STUN server for WebRTC |
 | `--turn-server` | *(none)* | TURN server for WebRTC relay |
 | `--no-auth` | `false` | Disable authentication |

@@ -194,9 +194,26 @@ pub const SessionManager = struct {
 
         ms.pty.setWindowSize(opts.rows, opts.cols);
 
-        const cmd_z = try self.allocator.dupeZ(u8, opts.command);
-        defer self.allocator.free(cmd_z);
-        const argv = [_]?[*:0]const u8{ cmd_z.ptr, null };
+        // Split command string into argv parts (space-separated)
+        var argv_list: std.ArrayList(?[*:0]const u8) = .empty;
+        defer {
+            for (argv_list.items) |item| {
+                if (item) |ptr| {
+                    // Recover the sentinel-terminated slice to free it
+                    const slice = std.mem.span(ptr);
+                    self.allocator.free(slice[0 .. slice.len + 1]);
+                }
+            }
+            argv_list.deinit(self.allocator);
+        }
+
+        var cmd_iter = std.mem.splitScalar(u8, opts.command, ' ');
+        while (cmd_iter.next()) |part| {
+            if (part.len == 0) continue;
+            const part_z = try self.allocator.dupeZ(u8, part);
+            try argv_list.append(self.allocator, part_z.ptr);
+        }
+        try argv_list.append(self.allocator, null); // null terminator
 
         const cwd_z: ?[*:0]const u8 = if (ms.session.cwd.len > 0)
             (self.allocator.dupeZ(u8, ms.session.cwd) catch null)
@@ -204,7 +221,7 @@ pub const SessionManager = struct {
             null;
         defer if (cwd_z) |z| self.allocator.free(z[0 .. ms.session.cwd.len + 1]);
 
-        try ms.pty.spawnCwd(&argv, null, cwd_z);
+        try ms.pty.spawnCwd(argv_list.items, null, cwd_z);
 
         try self.sessions.put(id, ms);
         ms.relay_thread = try std.Thread.spawn(.{}, ioRelay, .{ self, ms });
