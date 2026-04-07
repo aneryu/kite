@@ -75,6 +75,17 @@ Reduce from 4 to 2 servers:
 | `stun:stun.miwifi.com:3478` | ❌ | Non-professional STUN, reliability unknown |
 | `stun:stun.l.google.com:19302` | ❌ | Unreachable in China, timeout causes 5-10s delay |
 
+### ICE server ordering: `src/main.zig`
+
+`buildIceServerList()` currently appends user-defined servers after defaults. Reverse the order so user-defined servers (e.g. TURN with credentials via `--ice-server`) are first:
+
+```
+1. --ice-server (user-defined, tried first — e.g. TURN on relay.fun.dev)
+2. default_ice_servers (built-in STUN fallback)
+```
+
+This ensures user-configured TURN servers (with guaranteed reachability) are tried before STUN candidates that require P2P hole-punching. ICE will connect via the first reachable path (TURN relay), then optimize to direct P2P if available.
+
 ### forceMediaTransport: `src/rtc.zig`
 
 Enable `forceMediaTransport = true` in `rtcConfiguration`. This is the backend counterpart to frontend's `max-bundle` — forces reuse of media transport channel, reducing backend-side ICE channel count.
@@ -86,6 +97,7 @@ Enable `forceMediaTransport = true` in `rtcConfiguration`. This is the backend c
 | `web/src/lib/webrtc.ts` | Add `warmup()` method; update `startWebRTC()` to reuse warmed PC and use full RTCPeerConnection config; extract shared config builder |
 | `web/src/lib/connection.ts` | Call `webrtcTransport.warmup()` after signal connect |
 | `src/rtc.zig` | Reduce `default_ice_servers` to 2; enable `forceMediaTransport` in `setupPeerConnection()` |
+| `src/main.zig` | Reorder `buildIceServerList()`: user-defined first, defaults second |
 
 ## Expected Impact
 
@@ -100,5 +112,5 @@ Enable `forceMediaTransport = true` in `rtcConfiguration`. This is the backend c
 
 - ICE-Lite (not available in libdatachannel C API)
 - Aggressive Nomination (not available in libdatachannel C API)
-- TURN server deployment
-- iceTransportPolicy changes (current `all` policy is correct for P2P)
+- TURN server deployment (TURN credentials passed via `--ice-server`, no code changes needed)
+- iceTransportPolicy changes (current `all` policy is correct — allows TURN-first then P2P optimization)
