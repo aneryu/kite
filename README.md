@@ -1,4 +1,6 @@
-# Kite
+# Kite [DEPRECATED]
+
+> **This project has been deprecated.** WebRTC connection speed is too slow and connection stability is poor, making the real-time remote control experience unreliable. This repository is archived for reference only and will no longer be actively maintained.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zig](https://img.shields.io/badge/Zig-0.15.2-orange.svg)](https://ziglang.org/)
