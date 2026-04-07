@@ -214,7 +214,7 @@
   .card {
     display: flex; width: 100%; overflow: hidden; position: relative;
     background: linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 100%, #fff 3%), var(--card-bg));
-    border: 1px solid var(--border); border-radius: 12px;
+    border: 1px solid var(--border); border-radius: 10px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.25), 0 8px 24px rgba(0,0,0,0.15);
     color: var(--fg); font-family: inherit; font-size: inherit;
     transition: border-color 0.15s, box-shadow 0.2s, transform 0.15s;
@@ -222,7 +222,7 @@
   /* Top highlight line */
   .card::after {
     content: ''; position: absolute; top: 0; left: 16px; right: 16px; height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 15%, transparent), transparent);
     pointer-events: none;
   }
   .card.waiting {
@@ -233,9 +233,13 @@
     border-color: var(--border-glow);
     box-shadow: 0 2px 4px rgba(0,0,0,0.25), 0 8px 24px rgba(0,0,0,0.15);
   }
+  .card:active {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.2);
+  }
 
   /* Left accent bar */
-  .state-bar { width: 3px; flex-shrink: 0; border-radius: 12px 0 0 12px; }
+  .state-bar { width: 3px; flex-shrink: 0; border-radius: 10px 0 0 10px; }
   .state-bar.running { background: linear-gradient(180deg, var(--success), color-mix(in srgb, var(--success) 60%, transparent)); box-shadow: 0 0 10px rgba(102, 187, 106, 0.5); }
   .state-bar.waiting, .state-bar.asking { background: linear-gradient(180deg, var(--warn), color-mix(in srgb, var(--warn) 60%, transparent)); box-shadow: 0 0 10px rgba(255, 167, 38, 0.5); }
   .state-bar.waiting_permission { background: var(--warn); }
@@ -252,12 +256,13 @@
     font-size: 0.6rem; padding: 0.15rem 0.5rem; border-radius: 10px; white-space: nowrap;
     font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
   }
-  .status.running { background: rgba(102, 187, 106, 0.12); color: var(--success); border: 1px solid rgba(102, 187, 106, 0.2); }
+  .status.running { background: rgba(102, 187, 106, 0.12); color: var(--success); border: 1px solid rgba(102, 187, 106, 0.2); animation: pulse-slow 2.5s infinite; }
   .status.waiting { background: rgba(255, 167, 38, 0.12); color: var(--warn); border: 1px solid rgba(255, 167, 38, 0.2); animation: pulse 1.5s infinite; }
   .status.stopped { background: rgba(128, 128, 128, 0.1); color: var(--text-muted); border: 1px solid rgba(128, 128, 128, 0.15); }
   .status.waiting_permission { background: rgba(255, 167, 38, 0.12); color: var(--warn); border: 1px solid rgba(255, 167, 38, 0.2); }
   .status.asking { background: rgba(255, 167, 38, 0.12); color: var(--warn); border: 1px solid rgba(255, 167, 38, 0.2); animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.5 } }
+  @keyframes pulse-slow { 0%,100% { opacity:1 } 50% { opacity:.6 } }
 
   /* Row 2: subtitle */
   .row-sub { display: flex; align-items: center; gap: 0.35rem; }
@@ -273,14 +278,15 @@
     background: rgba(255,255,255,0.02); color: var(--text-secondary); font-size: 0.65rem;
     font-family: monospace;
   }
-  .meta-chip svg { opacity: 0.6; }
+  .meta-chip svg { opacity: 0.75; }
+  .meta-chip:hover { border-color: var(--accent); color: var(--accent); }
   .meta-spacer { flex: 1; }
   .terminal-btn {
     display: flex; align-items: center; gap: 0.3rem;
-    padding: 0.3rem 0.75rem; border: none; border-radius: 8px;
-    background: linear-gradient(135deg, rgba(79, 195, 247, 0.15), rgba(79, 195, 247, 0.05));
-    color: var(--accent); font-size: 0.7rem;
-    font-family: monospace; min-height: 32px;
+    padding: 0.35rem 0.85rem; border: 1px solid var(--accent); border-radius: 8px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 18%, transparent), color-mix(in srgb, var(--accent) 6%, transparent));
+    color: var(--accent); font-size: 0.75rem; font-weight: 600;
+    font-family: monospace; min-height: 34px;
     box-shadow: 0 0 0 1px var(--border-glow), 0 2px 8px rgba(0,0,0,0.2);
   }
   .terminal-btn:active { background: var(--accent); color: #000; box-shadow: 0 0 12px var(--glow-color); }
@@ -298,7 +304,7 @@
   .more { color: var(--text-muted); font-size: 0.7rem; padding-left: 1rem; }
 
   /* Prompt section */
-  .prompt-section { padding-top: 0.4rem; border-top: 2px solid var(--warn); }
+  .prompt-section { padding-top: 0.4rem; border-top: 1px solid var(--warn); }
   .question-block { margin-bottom: 0.5rem; }
   .question-block:last-of-type { margin-bottom: 0; }
   .question-block.answered { opacity: 0.5; }
