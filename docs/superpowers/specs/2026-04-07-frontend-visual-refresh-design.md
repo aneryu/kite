@@ -108,7 +108,7 @@ Full visual refresh of the Kite web frontend, with primary focus on the terminal
 
 ### Font Strategy Details
 
-- CDN source: use `https://cdn.jsdelivr.net/gh/ryanoasis/nerd-fonts@latest/patched-fonts/Hack/Regular/HackNerdFontMono-Regular.woff2` (verify exact path at implementation time; if unavailable, fall back to self-hosting the woff2 in `web/public/fonts/`)
+- Font source: self-host `HackNerdFontMono-Regular.ttf` downloaded from `https://github.com/ryanoasis/nerd-fonts/raw/refs/tags/v3.4.0/patched-fonts/Hack/Regular/HackNerdFontMono-Regular.ttf`, placed in `web/public/fonts/`
 - `font-display: swap` — text renders immediately with fallback, swaps after load
 - If CDN fails, graceful degradation to system monospace (Powerline symbols show as boxes but terminal remains functional)
 
