@@ -146,7 +146,7 @@ export class WebRtcTransport implements Transport {
   }
 
   restartOrRebuild(): void {
-    if (this.hasActivePeer()) {
+    if (this.hasActivePeer() && this.pc!.connectionState !== 'new') {
       console.log('[RTC] Active peer exists, attempting ICE restart instead of full rebuild');
       this.attemptIceRestart();
     } else {
