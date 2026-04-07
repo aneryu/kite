@@ -24,10 +24,10 @@ fn checkResult(result: c_int) RtcError!void {
 }
 
 pub const default_ice_servers = [_][]const u8{
+    "stun:relay.fun.dev:3478",
     "stun:stun.qq.com:3478",
     "stun:stun.miwifi.com:3478",
     "stun:stun.l.google.com:19302",
-    "stun:stun1.l.google.com:19302",
 };
 
 pub const RtcConfig = struct {

@@ -23,16 +23,30 @@ type Sender interface {
 }
 
 // MemberInfo is the public view of a member (returned in joined response).
+// Extra fields (ice_servers, lan_ip, lan_port) from join are preserved.
 type MemberInfo struct {
-	ID   string `json:"id"`
-	Role string `json:"role"`
+	ID    string                 `json:"id"`
+	Role  string                 `json:"role"`
+	Extra map[string]interface{} `json:"-"`
+}
+
+func (m MemberInfo) MarshalJSON() ([]byte, error) {
+	out := map[string]interface{}{
+		"id":   m.ID,
+		"role": m.Role,
+	}
+	for k, v := range m.Extra {
+		out[k] = v
+	}
+	return json.Marshal(out)
 }
 
 // Member represents a connected client in a topic.
 type Member struct {
-	ID   string
-	Role string
-	Conn Sender
+	ID    string
+	Role  string
+	Conn  Sender
+	Extra map[string]interface{}
 }
 
 // Topic represents a signaling channel identified by a pairing code.
@@ -77,11 +91,16 @@ func generateMemberID() string {
 // Join adds a member to a topic. Creates the topic if it doesn't exist.
 // Returns the new member's ID and the list of existing members.
 func (tm *TopicManager) Join(code string, role string, conn Sender) (string, []MemberInfo, error) {
-	return tm.JoinWithIP(code, role, conn, "")
+	return tm.JoinWithExtra(code, role, conn, "", nil)
 }
 
 // JoinWithIP is like Join but also applies rate limiting by IP.
 func (tm *TopicManager) JoinWithIP(code string, role string, conn Sender, ip string) (string, []MemberInfo, error) {
+	return tm.JoinWithExtra(code, role, conn, ip, nil)
+}
+
+// JoinWithExtra is like Join but also stores extra fields from the join message.
+func (tm *TopicManager) JoinWithExtra(code string, role string, conn Sender, ip string, extra map[string]interface{}) (string, []MemberInfo, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -108,19 +127,23 @@ func (tm *TopicManager) JoinWithIP(code string, role string, conn Sender, ip str
 	// Collect existing members before adding new one
 	existing := make([]MemberInfo, 0, len(topic.Members))
 	for _, m := range topic.Members {
-		existing = append(existing, MemberInfo{ID: m.ID, Role: m.Role})
+		existing = append(existing, MemberInfo{ID: m.ID, Role: m.Role, Extra: m.Extra})
 	}
 
 	// Create new member
 	id := generateMemberID()
-	topic.Members[id] = &Member{ID: id, Role: role, Conn: conn}
+	topic.Members[id] = &Member{ID: id, Role: role, Conn: conn, Extra: extra}
 
-	// Notify existing members
-	notification, _ := json.Marshal(map[string]string{
+	// Notify existing members (include extra fields like ice_servers, lan_ip)
+	notifMap := map[string]interface{}{
 		"type":      "member_joined",
 		"member_id": id,
 		"role":      role,
-	})
+	}
+	for k, v := range extra {
+		notifMap[k] = v
+	}
+	notification, _ := json.Marshal(notifMap)
 	for _, m := range topic.Members {
 		if m.ID != id {
 			m.Conn.Send(notification)

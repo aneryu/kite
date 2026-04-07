@@ -22,6 +22,10 @@ export class WebRtcTransport implements Transport {
   private iceServers: string[] = [];
   private storedToken: string | null = null;
 
+  // ICE candidate gathering state
+  private gatheredTypes: Set<string> = new Set();
+  private gatheringDone = false;
+
   // Recovery state
   private recovering = false;
   private recoveryTimeout: number | null = null;
@@ -97,6 +101,18 @@ export class WebRtcTransport implements Transport {
 
   // --- Public methods for external orchestration ---
 
+  getPeerConnection(): RTCPeerConnection | null {
+    return this.pc;
+  }
+
+  getGatheredCandidateTypes(): string[] {
+    return [...this.gatheredTypes];
+  }
+
+  isGatheringDone(): boolean {
+    return this.gatheringDone;
+  }
+
   handleRelayedMessage(payload: Record<string, unknown>): void {
     const type = payload.type as string;
     if (type === 'sdp_answer') {
@@ -115,7 +131,7 @@ export class WebRtcTransport implements Transport {
 
     const servers = this.iceServers.length > 0
       ? this.iceServers
-      : ['stun:stun.l.google.com:19302'];
+      : ['stun:relay.fun.dev:3478'];
     const rtcIceServers: RTCIceServer[] = servers.map((s) => {
       if (s.startsWith('turn:')) {
         const match = s.match(/^turn:([^:]+):([^@]+)@(.+)$/);
@@ -159,13 +175,28 @@ export class WebRtcTransport implements Transport {
       this.notifyState('closed');
     };
 
+    this.gatheredTypes.clear();
+    this.gatheringDone = false;
+
     this.pc.onicecandidate = (ev) => {
-      if (ev.candidate && this.signal && this.daemonMemberID) {
-        this.signal.relay(this.daemonMemberID, {
-          type: 'ice_candidate',
-          candidate: ev.candidate.candidate,
-          mid: ev.candidate.sdpMid || '',
-        });
+      if (ev.candidate) {
+        // Track candidate type for UI display
+        const ct = ev.candidate.type;
+        if (ct) {
+          this.gatheredTypes.add(ct);
+          this.notifyState('connecting'); // trigger UI update with new candidate info
+        }
+        if (this.signal && this.daemonMemberID) {
+          this.signal.relay(this.daemonMemberID, {
+            type: 'ice_candidate',
+            candidate: ev.candidate.candidate,
+            mid: ev.candidate.sdpMid || '',
+          });
+        }
+      } else {
+        // null candidate = gathering complete
+        this.gatheringDone = true;
+        this.notifyState('connecting');
       }
     };
 

@@ -1,7 +1,8 @@
 <script lang="ts">
   import SessionList from './components/SessionList.svelte';
   import SessionDetail from './components/SessionDetail.svelte';
-  import { transport, connect, authenticate, disconnect, isConnected, onAppEvent } from './lib/connection';
+  import { transport, connect, authenticate, disconnect, isConnected, onAppEvent, getPeerConnection } from './lib/connection';
+  import ConnectionStatus from './components/ConnectionStatus.svelte';
   import { onMount } from 'svelte';
   import { initTheme, applyTheme, getStoredTheme, THEME_IDS, THEME_LABELS, type ThemeId } from './lib/theme';
   import {
@@ -213,6 +214,8 @@
   {#if currentView !== 'detail'}
     <header>
       <h1 class="brand">Kite</h1>
+      <div class="header-right">
+      <ConnectionStatus {getPeerConnection} />
       <div class="theme-picker">
         <button class="theme-toggle" onclick={() => themeMenuOpen = !themeMenuOpen} aria-label="Change theme">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
@@ -228,6 +231,7 @@
             {/each}
           </div>
         {/if}
+      </div>
       </div>
     </header>
   {/if}
@@ -289,6 +293,8 @@
     color: var(--accent); letter-spacing: 0.05em;
     padding-left: 0.25rem;
   }
+
+  .header-right { display: flex; align-items: center; gap: 0.4rem; }
 
   /* Theme picker */
   .theme-picker { position: relative; }

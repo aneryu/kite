@@ -12,9 +12,13 @@ export interface SignalMessage {
 
 export type SignalMessageHandler = (msg: SignalMessage) => void;
 
+export type SignalState = 'connecting' | 'open' | 'closed';
+export type SignalStateHandler = (state: SignalState) => void;
+
 export class SignalClient {
   private ws: WebSocket | null = null;
   private handlers: SignalMessageHandler[] = [];
+  private stateHandlers: SignalStateHandler[] = [];
   private reconnectTimer: number | null = null;
   private reconnectDelay = 2000;
   private maxReconnectDelay = 30000;
@@ -38,15 +42,26 @@ export class SignalClient {
     this.role = role;
   }
 
+  onStateChange(handler: SignalStateHandler): () => void {
+    this.stateHandlers.push(handler);
+    return () => { this.stateHandlers = this.stateHandlers.filter((h) => h !== handler); };
+  }
+
+  private notifyState(state: SignalState) {
+    this.stateHandlers.forEach((h) => h(state));
+  }
+
   connect(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       if (this.ws?.readyState === WebSocket.OPEN) { resolve(); return; }
+      this.notifyState('connecting');
       this.ws = new WebSocket(this.url);
       this.ws.onopen = () => {
         this.send({ type: 'join', pairing_code: this.pairingCode, role: this.role });
         this.reconnectDelay = 2000;
         this.startHeartbeat();
         this.flushPending();
+        this.notifyState('open');
         resolve();
       };
       this.ws.onmessage = (ev) => {
@@ -62,6 +77,7 @@ export class SignalClient {
       };
       this.ws.onclose = () => {
         this.stopHeartbeat();
+        this.notifyState('closed');
         this.scheduleReconnect();
       };
       this.ws.onerror = () => {
@@ -162,5 +178,6 @@ export class SignalClient {
     this.ws?.close();
     this.ws = null;
     this.pendingSends = [];
+    this.notifyState('closed');
   }
 }

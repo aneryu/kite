@@ -38,11 +38,12 @@ func (w *wsConn) SendPing() error {
 }
 
 type signalMsg struct {
-	Type        string          `json:"type"`
-	PairingCode string          `json:"pairing_code,omitempty"`
-	Role        string          `json:"role,omitempty"`
-	To          string          `json:"to,omitempty"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
+	Type        string                 `json:"type"`
+	PairingCode string                 `json:"pairing_code,omitempty"`
+	Role        string                 `json:"role,omitempty"`
+	To          string                 `json:"to,omitempty"`
+	Payload     json.RawMessage        `json:"payload,omitempty"`
+	Extra       map[string]interface{} `json:"-"`
 }
 
 type Handler struct {
@@ -110,7 +111,18 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	memberID, members, err := h.tm.JoinWithIP(msg.PairingCode, msg.Role, conn, ip)
+	// Extract extra fields (ice_servers, lan_ip, lan_port, etc.) from join message
+	var rawFields map[string]interface{}
+	json.Unmarshal(data, &rawFields)
+	extra := make(map[string]interface{})
+	knownKeys := map[string]bool{"type": true, "pairing_code": true, "role": true}
+	for k, v := range rawFields {
+		if !knownKeys[k] {
+			extra[k] = v
+		}
+	}
+
+	memberID, members, err := h.tm.JoinWithExtra(msg.PairingCode, msg.Role, conn, ip, extra)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"type": "error", "error": err.Error()})
 		conn.Send(errMsg)
@@ -153,6 +165,8 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		switch inMsg.Type {
+		case "ping":
+			conn.Send([]byte(`{"type":"pong"}`))
 		case "relay":
 			if inMsg.To == "" || inMsg.Payload == nil {
 				continue

@@ -614,6 +614,40 @@ fn destroyPeer(allocator: std.mem.Allocator, member_id: []const u8) void {
     }
 }
 
+fn rebuildPeerForRestart(allocator: std.mem.Allocator, member_id: []const u8, was_authenticated: bool, sdp: []const u8, sdp_type: []const u8) void {
+    // Remove old peer
+    const old_entry = global_peers.fetchRemove(member_id) orelse return;
+    old_entry.value.deinit();
+    allocator.destroy(old_entry.value);
+
+    // Create new peer reusing the same key
+    const peer = allocator.create(RtcPeer) catch {
+        allocator.free(old_entry.key);
+        return;
+    };
+    peer.* = RtcPeer.init(allocator, global_data_queue, global_state_queue, old_entry.key);
+    peer.authenticated = was_authenticated;
+    peer.setupPeerConnection(.{
+        .ice_servers = global_ice_servers,
+    }) catch {
+        peer.deinit();
+        allocator.destroy(peer);
+        allocator.free(old_entry.key);
+        return;
+    };
+    global_peers.put(old_entry.key, peer) catch {
+        peer.deinit();
+        allocator.destroy(peer);
+        allocator.free(old_entry.key);
+        return;
+    };
+
+    // Apply the SDP offer on the fresh peer
+    peer.setRemoteDescription(sdp, sdp_type) catch |err| {
+        logStderr("[kite-signal] Rebuilt peer still failed setRemoteDescription: {}", .{err});
+    };
+}
+
 fn handleRelayPayload(allocator: std.mem.Allocator, from: []const u8, raw: []const u8) void {
     // Parse the payload object from the relay message
     const RelayMsg = struct {
@@ -639,8 +673,14 @@ fn handleRelayPayload(allocator: std.mem.Allocator, from: []const u8, raw: []con
 
     if (std.mem.eql(u8, payload.type, "sdp_offer")) {
         logStderr("[kite-signal] Received SDP offer from {s} (len={d})", .{ from, (payload.sdp orelse "").len });
+        // libdatachannel does not support ICE restart on an existing PeerConnection.
+        // Rebuild the peer but preserve the authenticated flag so the user doesn't
+        // need to re-authenticate after a reconnect.
+        const was_auth = peer.authenticated;
         peer.setRemoteDescription(payload.sdp orelse return, payload.sdp_type orelse "offer") catch |err| {
-            logStderr("[kite-signal] Failed to set remote description: {}", .{err});
+            logStderr("[kite-signal] setRemoteDescription failed ({}) — rebuilding peer for ICE restart", .{err});
+            rebuildPeerForRestart(allocator, from, was_auth, payload.sdp orelse return, payload.sdp_type orelse "offer");
+            return;
         };
     } else if (std.mem.eql(u8, payload.type, "ice_candidate")) {
         logStderr("[kite-signal] Received ICE candidate from {s}", .{from});
