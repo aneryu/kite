@@ -25,6 +25,7 @@
   --warn: #ffa726;
   --text-secondary: #9aa0a6;
   --text-muted: #666;
+  --nav-height: 2.5rem;
 }
 
 /* Cyber Light */
@@ -42,6 +43,7 @@
   --warn: #f57c00;
   --text-secondary: #666;
   --text-muted: #999;
+  --nav-height: 2.5rem;
 }
 
 /* Monokai */
@@ -59,6 +61,7 @@
   --warn: #e6db74;
   --text-secondary: #a6a68a;
   --text-muted: #75715e;
+  --nav-height: 2.5rem;
 }
 
 /* Nord */
@@ -76,6 +79,7 @@
   --warn: #ebcb8b;
   --text-secondary: #d8dee9;
   --text-muted: #7b88a1;
+  --nav-height: 2.5rem;
 }
 
 /* === Global Reset === */
@@ -89,6 +93,7 @@ body {
   height: 100dvh;
   overflow: hidden;
   touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
   transition: background-color 0.2s, color 0.2s;
 }
 
@@ -114,6 +119,7 @@ body {
 button {
   cursor: pointer;
   transition: transform 0.1s, background-color 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  will-change: transform;
 }
 
 button:active {
