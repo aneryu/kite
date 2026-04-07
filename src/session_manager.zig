@@ -504,7 +504,16 @@ pub const SessionManager = struct {
                 self.mutex.unlock();
 
                 if (local_fd >= 0) {
-                    _ = posix.write(local_fd, data) catch {};
+                    // Strip DSR queries (\x1b[6n, \x1b[?6n) from data sent to the
+                    // local terminal.  When relayed through kite the round-trip
+                    // latency causes CPR responses to arrive after the child has
+                    // moved on, leaking "9;1R"-style garbage to the screen.
+                    // Remote xterm.js handles DSR internally, so only local needs filtering.
+                    var filtered_buf: [4096]u8 = undefined;
+                    const filtered = stripDsrQueries(data, &filtered_buf);
+                    if (filtered.len > 0) {
+                        _ = posix.write(local_fd, filtered) catch {};
+                    }
                 }
 
                 const msg = protocol.encodeTerminalOutput(self.allocator, data, ms.session.id) catch continue;
@@ -635,7 +644,52 @@ fn dupSubagents(allocator: std.mem.Allocator, input: []const session_mod.Subagen
     return out.toOwnedSlice(allocator);
 }
 
+/// Strip DSR cursor-position queries (\x1b[6n and \x1b[?6n) from a byte slice.
+/// Returns a slice of `out` with those sequences removed.
+pub fn stripDsrQueries(data: []const u8, out: []u8) []const u8 {
+    var i: usize = 0;
+    var o: usize = 0;
+    while (i < data.len) {
+        if (i + 3 < data.len and data[i] == 0x1b and data[i + 1] == '[') {
+            // \x1b[6n (4 bytes)
+            if (data[i + 2] == '6' and data[i + 3] == 'n') {
+                i += 4;
+                continue;
+            }
+            // \x1b[?6n (5 bytes)
+            if (i + 4 < data.len and data[i + 2] == '?' and data[i + 3] == '6' and data[i + 4] == 'n') {
+                i += 5;
+                continue;
+            }
+        }
+        if (o < out.len) {
+            out[o] = data[i];
+            o += 1;
+        }
+        i += 1;
+    }
+    return out[0..o];
+}
+
 fn noopBroadcast(_: []const u8) void {}
+
+test "stripDsrQueries removes esc[6n" {
+    var out: [64]u8 = undefined;
+    const result = stripDsrQueries("hello\x1b[6nworld", &out);
+    try std.testing.expectEqualStrings("helloworld", result);
+}
+
+test "stripDsrQueries removes esc[?6n" {
+    var out: [64]u8 = undefined;
+    const result = stripDsrQueries("a\x1b[?6nb", &out);
+    try std.testing.expectEqualStrings("ab", result);
+}
+
+test "stripDsrQueries preserves other escapes" {
+    var out: [64]u8 = undefined;
+    const result = stripDsrQueries("\x1b[32mgreen\x1b[0m", &out);
+    try std.testing.expectEqualStrings("\x1b[32mgreen\x1b[0m", result);
+}
 
 test "session limit" {
     const allocator = std.testing.allocator;

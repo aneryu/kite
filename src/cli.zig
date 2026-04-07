@@ -154,6 +154,7 @@ pub fn printStartHelp() void {
     out.print("{s}Options:{s}\n", .{ code(.bold), code(.reset) }) catch {};
     out.print("  {s}--no-auth{s}           Disable authentication (development only)\n", .{ code(.yellow), code(.reset) }) catch {};
     out.print("  {s}--signal-url{s} <URL>  Signal server URL (overrides config file)\n", .{ code(.yellow), code(.reset) }) catch {};
+    out.print("  {s}--lan-ws{s}            Enable LAN WebSocket server (ws://)\n", .{ code(.yellow), code(.reset) }) catch {};
     out.print("\n{s}Examples:{s}\n", .{ code(.bold), code(.reset) }) catch {};
     out.print("  {s}kite start{s}\n", .{ code(.green), code(.reset) }) catch {};
     out.print("  {s}kite start{s} --signal-url wss://my-relay.example.com/remote\n", .{ code(.green), code(.reset) }) catch {};

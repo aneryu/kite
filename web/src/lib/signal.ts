@@ -167,7 +167,7 @@ export class SignalClient {
   private resetPongTimeout() {
     if (this.pongTimeout !== null) clearTimeout(this.pongTimeout);
     this.pongTimeout = window.setTimeout(() => {
-      console.warn('[Signal] No response in 30s, forcing reconnect');
+      console.warn('[Signal] No response in 10s, forcing reconnect');
       this.ws?.close();
     }, this.PONG_TIMEOUT);
   }

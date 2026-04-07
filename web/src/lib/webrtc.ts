@@ -29,6 +29,7 @@ export class WebRtcTransport implements Transport {
   // Recovery state
   private recovering = false;
   private recoveryTimeout: number | null = null;
+  private disconnectGraceTimeout: number | null = null;
   private visibilityHandler: (() => void) | null = null;
 
   private buildPcConfig(servers?: string[]): RTCConfiguration {
@@ -70,6 +71,7 @@ export class WebRtcTransport implements Transport {
   }
 
   disconnect(): void {
+    this.cancelDisconnectGrace();
     this.cancelRecovery();
     this.removeVisibilityHandler();
     this.stopPing();
@@ -249,16 +251,28 @@ export class WebRtcTransport implements Transport {
       console.log('[RTC] Connection state:', state);
       if (state === 'failed') {
         // ICE agent is terminal — full rebuild is the only option
+        this.cancelDisconnectGrace();
         this.cancelRecovery();
         this.fullRebuild();
       } else if (state === 'disconnected') {
-        // Immediately attempt ICE restart, with recovery timer as fallback
-        if (this.signal?.isConnected() && this.daemonMemberID) {
-          this.attemptIceRestart();
+        // 'disconnected' is often transient — wait 3s before starting recovery.
+        // The ICE agent continues probing during this grace period.
+        if (!this.disconnectGraceTimeout && !this.recovering) {
+          console.log('[RTC] Disconnected — waiting 3s grace period');
+          this.disconnectGraceTimeout = window.setTimeout(() => {
+            this.disconnectGraceTimeout = null;
+            if (this.pc?.connectionState === 'disconnected') {
+              console.log('[RTC] Still disconnected after grace period, starting recovery');
+              this.startRecovery();
+            }
+          }, 3_000);
         }
-        this.startRecovery();
-      } else if (state === 'connected' && this.recovering) {
-        // ICE restart succeeded at transport level, wait for DC to re-open
+      } else if (state === 'connected') {
+        // Connection restored — cancel any pending grace/recovery
+        this.cancelDisconnectGrace();
+        if (this.recovering) {
+          // ICE restart succeeded at transport level, wait for DC to re-open
+        }
       }
     };
 
@@ -281,7 +295,7 @@ export class WebRtcTransport implements Transport {
   startRecovery(): void {
     if (this.recovering) return;
     this.recovering = true;
-    console.log('[RTC] Starting parallel recovery');
+    console.log('[RTC] Starting recovery');
 
     // Path 1: Probe existing DC — send ping + request_sync
     if (this.dc?.readyState === 'open') {
@@ -299,14 +313,38 @@ export class WebRtcTransport implements Transport {
       this.signal.forceReconnect();
     }
 
-    // Fallback timeout: 15s → full rebuild
+    // Fallback timeout: 15s → full rebuild (or extend if ICE restart is actively connecting)
+    this.scheduleRecoveryTimeout();
+  }
+
+  private scheduleRecoveryTimeout(): void {
+    if (this.recoveryTimeout !== null) clearTimeout(this.recoveryTimeout);
     this.recoveryTimeout = window.setTimeout(() => {
-      if (this.recovering) {
+      if (!this.recovering) return;
+      const state = this.pc?.connectionState;
+      if (state === 'connecting') {
+        // ICE restart is making progress (TURN path is slow) — extend once
+        console.log('[RTC] Recovery timeout but PC is connecting, extending 15s');
+        this.recoveryTimeout = window.setTimeout(() => {
+          if (this.recovering) {
+            console.log('[RTC] Extended recovery timeout, falling back to full rebuild');
+            this.cancelRecovery();
+            this.fullRebuild();
+          }
+        }, 15_000);
+      } else {
         console.log('[RTC] Recovery timeout, falling back to full rebuild');
         this.cancelRecovery();
         this.fullRebuild();
       }
-    }, 5_000);
+    }, 15_000);
+  }
+
+  private cancelDisconnectGrace(): void {
+    if (this.disconnectGraceTimeout !== null) {
+      clearTimeout(this.disconnectGraceTimeout);
+      this.disconnectGraceTimeout = null;
+    }
   }
 
   private cancelRecovery(): void {
@@ -378,12 +416,11 @@ export class WebRtcTransport implements Transport {
           this.sendRaw({ type: 'ping' });
           this.sendRaw({ type: 'request_sync' });
         }
-        // If PC exists but not connected, do parallel recovery
+        // If PC exists but not connected, start recovery (skips grace period since
+        // the tab was backgrounded — the disconnection is likely stale)
         const pcState = this.pc?.connectionState;
         if (pcState && pcState !== 'connected') {
-          if (this.signal?.isConnected() && this.daemonMemberID) {
-            this.attemptIceRestart();
-          }
+          this.cancelDisconnectGrace();
           this.startRecovery();
         }
         // If signal is down, force reconnect in parallel

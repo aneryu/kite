@@ -24,6 +24,7 @@ const Config = struct {
     extra_ice: [8]?[]const u8 = [_]?[]const u8{null} ** 8,
     extra_ice_count: usize = 0,
     ws_port: u16 = 7891,
+    lan_ws: bool = false,
 };
 
 const Command = enum {
@@ -210,6 +211,8 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 return;
             };
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--lan-ws")) {
+            config.lan_ws = true;
         } else if (std.mem.eql(u8, args[i], "--ice-server")) {
             if (i + 1 >= args.len) {
                 cli.printMissingOption("--ice-server <URL>", "start", "kite start --ice-server <URL>");
@@ -221,7 +224,7 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
             }
             i += 1;
         } else if (std.mem.startsWith(u8, args[i], "--")) {
-            const start_opts = [_][]const u8{ "--no-auth", "--signal-url", "--ws-port", "--ice-server" };
+            const start_opts = [_][]const u8{ "--no-auth", "--signal-url", "--ws-port", "--lan-ws", "--ice-server" };
             cli.printUnknownOption(args[i], &start_opts, "start");
             return;
         }
@@ -297,19 +300,22 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     initGlobalPeers(allocator, &data_queue, &state_queue);
 
-    // WS server for LAN connections
+    // WS server for LAN connections (opt-in via --lan-ws)
     const net_info = @import("net_info.zig");
     const WsServer = @import("ws_server.zig").WsServer;
     var ws_queue = MessageQueue.init(allocator);
     defer ws_queue.deinit();
 
     var lan_ip_buf: [16]u8 = undefined;
-    const lan_ip = net_info.getLanIp(&lan_ip_buf);
+    const lan_ip = if (config.lan_ws) net_info.getLanIp(&lan_ip_buf) else null;
 
-    var ws_server: ?WsServer = WsServer.init(allocator, config.ws_port, &ws_queue) catch |err| blk: {
-        logStderr("[kite] WS server failed to bind port {d}: {}", .{ config.ws_port, err });
-        break :blk null;
-    };
+    var ws_server: ?WsServer = if (config.lan_ws)
+        WsServer.init(allocator, config.ws_port, &ws_queue) catch |err| blk: {
+            logStderr("[kite] WS server failed to bind port {d}: {}", .{ config.ws_port, err });
+            break :blk null;
+        }
+    else
+        null;
     defer if (ws_server) |*ws| ws.deinit();
 
     if (ws_server != null) {
@@ -331,8 +337,10 @@ fn runStart(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     };
     defer signal_client.deinit();
-    signal_client.lan_ip = lan_ip;
-    signal_client.lan_port = config.ws_port;
+    if (config.lan_ws) {
+        signal_client.lan_ip = lan_ip;
+        signal_client.lan_port = config.ws_port;
+    }
     const ice_servers = buildIceServerList(allocator, config) catch null;
     defer if (ice_servers) |s| allocator.free(s);
     global_ice_servers = ice_servers orelse &rtc_mod.default_ice_servers;
@@ -676,11 +684,16 @@ fn handleRelayPayload(allocator: std.mem.Allocator, from: []const u8, raw: []con
     if (std.mem.eql(u8, payload.type, "sdp_offer")) {
         logStderr("[kite-signal] Received SDP offer from {s} (len={d})", .{ from, (payload.sdp orelse "").len });
         // libdatachannel does not support ICE restart on an existing PeerConnection.
-        // Rebuild the peer but preserve the authenticated flag so the user doesn't
-        // need to re-authenticate after a reconnect.
+        // If the peer already has a remote description, this is an ICE restart —
+        // go straight to rebuild to avoid the "Invalid ICE settings" error.
         const was_auth = peer.authenticated;
+        if (peer.remote_description_set) {
+            logStderr("[kite-signal] ICE restart detected — rebuilding peer for {s}", .{from});
+            rebuildPeerForRestart(allocator, from, was_auth, payload.sdp orelse return, payload.sdp_type orelse "offer");
+            return;
+        }
         peer.setRemoteDescription(payload.sdp orelse return, payload.sdp_type orelse "offer") catch |err| {
-            logStderr("[kite-signal] setRemoteDescription failed ({}) — rebuilding peer for ICE restart", .{err});
+            logStderr("[kite-signal] setRemoteDescription failed ({}) — rebuilding peer", .{err});
             rebuildPeerForRestart(allocator, from, was_auth, payload.sdp orelse return, payload.sdp_type orelse "offer");
             return;
         };
@@ -1328,11 +1341,19 @@ fn handleIpcConnection(allocator: std.mem.Allocator, conn: posix.fd_t, session_m
             return false;
         }
 
-        // Send buffered terminal history so client sees current state
+        // Send buffered terminal history so client sees current state.
+        // Strip DSR queries to prevent CPR response leakage on replay.
         if (session_manager.getTerminalSnapshot(allocator, session_id)) |history| {
             defer allocator.free(history);
             if (history.len > 0) {
-                _ = posix.write(conn, history) catch {};
+                const filtered_snapshot = allocator.alloc(u8, history.len) catch null;
+                if (filtered_snapshot) |fbuf| {
+                    defer allocator.free(fbuf);
+                    const filtered = @import("session_manager.zig").stripDsrQueries(history, fbuf);
+                    _ = posix.write(conn, filtered) catch {};
+                } else {
+                    _ = posix.write(conn, history) catch {};
+                }
             }
         }
 
