@@ -203,7 +203,15 @@ export class WebRtcTransport implements Transport {
     this.pc.onconnectionstatechange = () => {
       const state = this.pc?.connectionState;
       console.log('[RTC] Connection state:', state);
-      if (state === 'disconnected' || state === 'failed') {
+      if (state === 'failed') {
+        // ICE agent is terminal — full rebuild is the only option
+        this.cancelRecovery();
+        this.fullRebuild();
+      } else if (state === 'disconnected') {
+        // Immediately attempt ICE restart, with recovery timer as fallback
+        if (this.signal?.isConnected() && this.daemonMemberID) {
+          this.attemptIceRestart();
+        }
         this.startRecovery();
       } else if (state === 'connected' && this.recovering) {
         // ICE restart succeeded at transport level, wait for DC to re-open
@@ -321,10 +329,22 @@ export class WebRtcTransport implements Transport {
     this.removeVisibilityHandler();
     this.visibilityHandler = () => {
       if (document.visibilityState === 'visible') {
+        // Always probe liveness
         if (this.dc?.readyState === 'open') {
+          this.sendRaw({ type: 'ping' });
           this.sendRaw({ type: 'request_sync' });
-        } else if (this.pc) {
+        }
+        // If PC exists but not connected, do parallel recovery
+        const pcState = this.pc?.connectionState;
+        if (pcState && pcState !== 'connected') {
+          if (this.signal?.isConnected() && this.daemonMemberID) {
+            this.attemptIceRestart();
+          }
           this.startRecovery();
+        }
+        // If signal is down, force reconnect in parallel
+        if (this.signal && !this.signal.isConnected()) {
+          this.signal.forceReconnect();
         }
       }
     };
