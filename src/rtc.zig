@@ -26,12 +26,15 @@ fn checkResult(result: c_int) RtcError!void {
 pub const default_ice_servers = [_][]const u8{
     "stun:relay.fun.dev:3478",
     "stun:stun.qq.com:3478",
-    "stun:stun.miwifi.com:3478",
-    "stun:stun.l.google.com:19302",
 };
 
 pub const RtcConfig = struct {
     ice_servers: []const []const u8 = &default_ice_servers,
+};
+
+const PendingCandidate = struct {
+    candidate: []u8,
+    mid: []u8,
 };
 
 pub const RtcPeer = struct {
@@ -42,6 +45,8 @@ pub const RtcPeer = struct {
     allocator: std.mem.Allocator,
     member_id: []const u8 = "",
     authenticated: bool = false,
+    remote_description_set: bool = false,
+    pending_candidates: std.ArrayList(PendingCandidate) = std.ArrayList(PendingCandidate).empty,
 
     /// Initialize RtcPeer fields (pc, dc remain -1).
     /// Call `setupPeerConnection` after the RtcPeer is at its final memory location.
@@ -84,6 +89,7 @@ pub const RtcPeer = struct {
         var rtc_config: c.rtcConfiguration = std.mem.zeroes(c.rtcConfiguration);
         rtc_config.iceServers = &servers;
         rtc_config.iceServersCount = server_count;
+        rtc_config.forceMediaTransport = true;
 
         const pc = c.rtcCreatePeerConnection(&rtc_config);
         if (pc < 0) return RtcError.RuntimeFailure;
@@ -111,6 +117,11 @@ pub const RtcPeer = struct {
             _ = c.rtcDeletePeerConnection(self.pc);
             self.pc = -1;
         }
+        for (self.pending_candidates.items) |pc| {
+            self.allocator.free(pc.candidate);
+            self.allocator.free(pc.mid);
+        }
+        self.pending_candidates.deinit(self.allocator);
     }
 
     pub fn setRemoteDescription(self: *RtcPeer, sdp: []const u8, sdp_type: []const u8) !void {
@@ -119,9 +130,31 @@ pub const RtcPeer = struct {
         const type_z = try self.allocator.dupeZ(u8, sdp_type);
         defer self.allocator.free(type_z);
         try checkResult(c.rtcSetRemoteDescription(self.pc, sdp_z.ptr, type_z.ptr));
+        self.remote_description_set = true;
+
+        // Flush pending candidates that arrived before remote description
+        for (self.pending_candidates.items) |pc| {
+            const cand_z = self.allocator.dupeZ(u8, pc.candidate) catch continue;
+            defer self.allocator.free(cand_z);
+            const mid_z = self.allocator.dupeZ(u8, pc.mid) catch continue;
+            defer self.allocator.free(mid_z);
+            checkResult(c.rtcAddRemoteCandidate(self.pc, cand_z.ptr, mid_z.ptr)) catch {};
+            self.allocator.free(pc.candidate);
+            self.allocator.free(pc.mid);
+        }
+        self.pending_candidates.clearRetainingCapacity();
     }
 
     pub fn addRemoteCandidate(self: *RtcPeer, candidate: []const u8, mid: []const u8) !void {
+        if (!self.remote_description_set) {
+            // Buffer candidates until remote description is set
+            const cand_copy = try self.allocator.dupe(u8, candidate);
+            errdefer self.allocator.free(cand_copy);
+            const mid_copy = try self.allocator.dupe(u8, mid);
+            errdefer self.allocator.free(mid_copy);
+            try self.pending_candidates.append(self.allocator, .{ .candidate = cand_copy, .mid = mid_copy });
+            return;
+        }
         const cand_z = try self.allocator.dupeZ(u8, candidate);
         defer self.allocator.free(cand_z);
         const mid_z = try self.allocator.dupeZ(u8, mid);
